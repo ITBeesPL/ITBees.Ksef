@@ -9,11 +9,6 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.4" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.0" />
-    <Folder Include="Core\" />
-    <Folder Include="KsefV2\" />
-    <Folder Include="Validation\" />
-    <Folder Include="Orchestration\" />
-    <Folder Include="Transport\" />
   </ItemGroup>
 
 </Project>

@@ -15,40 +15,39 @@ public sealed class KsefClient : IKsefClient
         _http = http; _opt = opt.Value;
     }
 
-    public async Task<string> OpenSessionByTokenAsync(string nip, string token, CancellationToken ct)
+    public async Task<string> OpenSessionAsync(string nip, string token, CancellationToken ct)
     {
-        // Shape per TE Swagger: replace with exact properties from /docs v2.
-        var req = new { nip, token };
+        var req = new { nip, token }; // dopasuj do Swaggera TE
         using var resp = await _http.PostAsJsonAsync(_opt.Endpoints.SessionInitToken, req, ct);
         resp.EnsureSuccessStatusCode();
         var dto = await resp.Content.ReadFromJsonAsync<SessionDto>(cancellationToken: ct)
                   ?? throw new InvalidOperationException("Empty session response");
-        return dto.sessionId;
+        return dto.SessionId;
     }
 
-    public async Task<string> SubmitInvoiceAsync(string sessionId, byte[] encryptedPayload, CancellationToken ct)
+    public async Task<SubmitResult> SubmitInvoiceAsync(string sessionId, byte[] encryptedPayload, CancellationToken ct)
     {
         using var form = new MultipartFormDataContent
         {
             { new StringContent(sessionId), "sessionId" },
-            // In TE: use field names per Swagger, e.g., "file" or "invoice"; filename p7m if CMS used.
             { new ByteArrayContent(encryptedPayload), "file", "invoice.p7m" }
         };
         using var resp = await _http.PostAsync(_opt.Endpoints.InvoicesSubmit, form, ct);
         resp.EnsureSuccessStatusCode();
         var dto = await resp.Content.ReadFromJsonAsync<SubmitDto>(cancellationToken: ct)
                   ?? throw new InvalidOperationException("Empty submit response");
-        return dto.referenceId;
+        return new SubmitResult(dto.ReferenceId);
     }
 
-    public async Task<StatusDto> GetStatusAsync(string sessionId, string referenceId, CancellationToken ct)
+    public async Task<StatusResult> GetStatusAsync(string sessionId, string referenceId, CancellationToken ct)
     {
         var url = $"{_opt.Endpoints.InvoicesStatus}?sessionId={Uri.EscapeDataString(sessionId)}&referenceId={Uri.EscapeDataString(referenceId)}";
         using var resp = await _http.GetAsync(url, ct);
         resp.EnsureSuccessStatusCode();
         var dto = await resp.Content.ReadFromJsonAsync<StatusDto>(cancellationToken: ct)
                   ?? throw new InvalidOperationException("Empty status response");
-        return dto;
+
+        return new StatusResult(dto.Status, dto.KsefNumber, dto.RejectionReason, dto.UpoAvailableAt);
     }
 
     public async Task<byte[]> DownloadUpoAsync(string sessionId, string referenceId, CancellationToken ct)
@@ -59,8 +58,8 @@ public sealed class KsefClient : IKsefClient
         return await resp.Content.ReadAsByteArrayAsync(ct);
     }
 
-    private sealed record SessionDto(string sessionId);
-    private sealed record SubmitDto(string referenceId);
+    // DTOs tylko lokalnie w KsefV2
+    private sealed record SessionDto(string SessionId);
+    private sealed record SubmitDto(string ReferenceId);
+    private sealed record StatusDto(string Status, string? KsefNumber, string? RejectionReason, DateTimeOffset? UpoAvailableAt);
 }
-
-public sealed record StatusDto(string status, string? ksefNumber, string? rejectionReason);

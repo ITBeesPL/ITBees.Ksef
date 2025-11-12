@@ -1,15 +1,10 @@
 ﻿using ITBees.Ksef.Core;
+using ITBees.Ksef.Security;
 using ITBees.Ksef.Transport;
 using Microsoft.Extensions.Logging;
 
 
 namespace ITBees.Ksef.Orchestration;
-
-public interface IInvoiceSender
-{
-    Task QueueAsync(IInvoiceDocument doc, CancellationToken ct);
-    Task ProcessPendingAsync(int batchSize, CancellationToken ct); // wywołasz z własnego crona
-}
 
 public sealed class InvoiceSender : IInvoiceSender
 {
@@ -40,7 +35,7 @@ public sealed class InvoiceSender : IInvoiceSender
             try
             {
                 var creds = await _creds.GetAsync(doc.Issuer, ct);
-                var session = await _client.OpenSessionAsync(doc.Issuer, creds.Token, ct);
+                var session = await _client.OpenSessionAsync(doc.Issuer.Nip, creds.Token, ct);
 
                 // Encrypt required by KSeF 2.0
                 var payload = await _enc.EncryptAsync(System.Text.Encoding.UTF8.GetBytes(doc.XmlRaw), ct);
