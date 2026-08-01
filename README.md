@@ -1,0 +1,99 @@
+# ITBees.Ksef
+
+Biblioteka .NET 8 do integracji z **KSeF API 2.0** (Krajowy System e-Faktur) — wersją API obowiązującą od lutego 2026 r.
+
+Solucja składa się z dwóch pakietów:
+
+- **ITBees.Ksef** — czysty klient KSeF API 2.0 + generator FA(3); zero zależności od EF Core i stacka FAS, użyteczny w dowolnej aplikacji .NET.
+- **ITBees.Ksef.Fas** — gotowe wpięcie dla projektów opartych o ITBees.FAS.Payments: encja outboxu `KsefInvoiceRecord` z numeracją faktur, rejestracja modelu EF i worker tła wystawiający fakturę KSeF dla każdej opłaconej `PaymentSession` (patrz sekcja "Integracja z FAS" niżej).
+
+## Zakres
+
+- **Uwierzytelnianie tokenem KSeF** (pełny flow API 2.0): `POST /auth/challenge` → szyfrowanie `{token}|{timestampMs}` RSA-OAEP (SHA-256) kluczem publicznym MF → `POST /auth/ksef-token` → polling `GET /auth/{referenceNumber}` → `POST /auth/token/redeem` → JWT `accessToken`/`refreshToken` z automatycznym cache i odświeżaniem (`POST /auth/token/refresh`).
+- **Sesja interaktywna**: `POST /sessions/online` (formCode FA (3) / 1-0E), obowiązkowe szyfrowanie faktury AES-256-CBC (PKCS#7) kluczem sesyjnym zaszyfrowanym RSA-OAEP, `POST /sessions/online/{ref}/invoices`, polling statusu, `POST /sessions/online/{ref}/close`.
+- **Generator XML FA(3)** (namespace `http://crd.gov.pl/wzor/2025/06/25/13775/`) z prostego modelu domenowego `KsefInvoice` — walidowany w testach względem oficjalnego XSD MF.
+- **UPO** — pobranie poświadczenia dla faktury po nadaniu numeru KSeF.
+- Środowiska: TEST (`api-test.ksef.mf.gov.pl/v2`), DEMO (`api-demo.ksef.mf.gov.pl/v2`), PROD (`api.ksef.mf.gov.pl/v2`).
+
+## Szybki start
+
+```csharp
+// Program.cs
+services.AddITBeesKsef(configuration); // sekcja "Ksef"
+```
+
+```json
+{
+  "Ksef": {
+    "Environment": "Test",            // Test | Demo | Production
+    "KsefToken": "<token wygenerowany w aplikacji KSeF dla NIP sprzedawcy>",
+    "Nip": "5555555555",
+    "SystemInfo": "MojaAplikacja",
+    "Seller": {
+      "Nip": "5555555555",
+      "Name": "Moja Firma Sp. z o.o.",
+      "AddressLine1": "ul. Przykładowa 1",
+      "AddressLine2": "00-001 Warszawa",
+      "CountryCode": "PL"
+    }
+  }
+}
+```
+
+```csharp
+var result = await ksefInvoiceService.SendInvoiceAsync(new KsefInvoice
+{
+    Number = "FV/2026/08/001",
+    IssueDate = DateOnly.FromDateTime(DateTime.UtcNow),
+    Currency = "PLN",
+    Buyer = new KsefParty
+    {
+        Nip = "1111111111",           // null => nabywca B2C (BrakID)
+        Name = "Nabywca S.A.",
+        AddressLine1 = "ul. Polna 2",
+        AddressLine2 = "11-111 Kraków"
+    },
+    Lines =
+    {
+        new KsefInvoiceLine { Name = "Abonament", Quantity = 1, UnitNetPrice = 100m, VatRate = 23 }
+    },
+    IsPaid = true,
+    PaymentDate = DateOnly.FromDateTime(DateTime.UtcNow)
+});
+
+// result.KsefNumber — numer KSeF faktury
+// result.UpoXml    — UPO (XML), jeżeli było już dostępne
+```
+
+Warstwy niższego poziomu (`IKsefApiClient`, `IKsefAuthenticationService`, `IFa3XmlGenerator`, `KsefCryptography`) są publiczne — można ich użyć bezpośrednio, np. do własnej orkiestracji wsadowej.
+
+## Uwaga operacyjna
+
+`SendInvoiceAsync` wykonuje pełny cykl z pollingiem statusów (auth + przetwarzanie faktury) — **nie wywołuj go synchronicznie z webhooka** (np. Stripe, timeout ~10 s). Wywołuj z zadania w tle / kolejki.
+
+## Integracja z FAS (ITBees.Ksef.Fas)
+
+Dla aplikacji na stacku ITBees.FAS.Payments (np. płatności Stripe) wystarczą trzy kroki:
+
+```csharp
+// 1. DbContext.OnModelCreating — rejestracja tabeli outboxu KsefInvoiceRecord:
+ITBees.Ksef.Fas.Setup.KsefFasDbModelBuilder.RegisterDbModels(modelBuilder);
+// + dotnet ef migrations add AddKsefInvoiceRecord
+
+// 2. Rejestracja DI (klient KSeF + serwis + worker tła):
+builder.Services.AddKsefFasInvoicing<MyAppDbContext>(configuration); // sekcja "Ksef"
+
+// 3. Sekcja "Ksef" w konfiguracji (jak wyżej w szybkim starcie).
+```
+
+Worker co 60 s wystawia faktury FA(3) dla sesji `Finished && Success && !Refunded && !InvoiceCreated`
+(pokrywa webhook, potwierdzenie z redirectu i odnowienia subskrypcji), nadaje numery `FV/{n}/{MM}/{rrrr}`
+(unikalny indeks per miesiąc), archiwizuje XML + UPO w `KsefInvoiceRecord` i ponawia błędy do 10 razy.
+Idempotencję gwarantują `PaymentSession.InvoiceCreated` oraz unikalny indeks na `PaymentSessionGuid`.
+Plany darmowe/trialowe dostają status `Skipped`. Dopóki `Ksef:KsefToken` jest pusty, worker nic nie robi.
+
+## Testy
+
+`dotnet test` — testy jednostkowe kryptografii, serializacji kontraktów API 2.0, flow uwierzytelniania (mock HTTP) oraz walidacja generowanego XML względem oficjalnego `schemat_FA(3)_v1-0E.xsd`.
+
+`TestKsefConsoleApp` — interaktywny smoke test na środowisku TEST (uzupełnij `Ksef:KsefToken` i `Ksef:Nip` w `appsettings.json`).
