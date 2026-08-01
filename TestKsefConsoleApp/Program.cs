@@ -1,13 +1,8 @@
-﻿using ITBees.Ksef.Core;
-using ITBees.Ksef.KsefV2;
-using ITBees.Ksef.Transport;
+using ITBees.Ksef.DependencyInjection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
-using Polly;
-using Polly.Extensions.Http;
 
 namespace TestKsefConsoleApp
 {
@@ -31,24 +26,7 @@ namespace TestKsefConsoleApp
                 })
                 .ConfigureServices((ctx, services) =>
                 {
-                    services.Configure<KsefOptions>(ctx.Configuration.GetSection("Ksef"));
-
-                    services.AddHttpClient<IKsefClient, KsefClient>((sp, http) =>
-                        {
-                            var opt = sp.GetRequiredService<IOptions<KsefOptions>>().Value;
-                            http.BaseAddress = new Uri(opt.BaseUrl);
-                            http.Timeout = TimeSpan.FromSeconds(opt.TimeoutSeconds);
-                        })
-                        .AddPolicyHandler(HttpPolicyExtensions
-                            .HandleTransientHttpError()
-                            .OrResult(r => (int)r.StatusCode == 429)
-                            .WaitAndRetryAsync(new[]
-                            {
-                                TimeSpan.FromSeconds(1),
-                                TimeSpan.FromSeconds(3),
-                                TimeSpan.FromSeconds(7)
-                            }));
-
+                    services.AddITBeesKsef(ctx.Configuration);
                     services.AddSingleton<App>();
                 })
                 .Build();

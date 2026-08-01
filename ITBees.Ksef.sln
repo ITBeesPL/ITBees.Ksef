@@ -7,6 +7,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ITBees.Ksef", "ITBees.Ksef\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TestKsefConsoleApp", "TestKsefConsoleApp\TestKsefConsoleApp.csproj", "{84A61082-E02C-404F-A939-C005F81CBB4F}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ITBees.Ksef.Tests", "ITBees.Ksef.Tests\ITBees.Ksef.Tests.csproj", "{BB4EA1CB-250F-4048-B3FC-F42294ABDC8D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ITBees.Ksef.Fas", "ITBees.Ksef.Fas\ITBees.Ksef.Fas.csproj", "{FD704E9F-DB38-4160-B3A0-DE32AC5F5C73}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,6 +25,14 @@ Global
 		{84A61082-E02C-404F-A939-C005F81CBB4F}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{84A61082-E02C-404F-A939-C005F81CBB4F}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{84A61082-E02C-404F-A939-C005F81CBB4F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BB4EA1CB-250F-4048-B3FC-F42294ABDC8D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BB4EA1CB-250F-4048-B3FC-F42294ABDC8D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BB4EA1CB-250F-4048-B3FC-F42294ABDC8D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BB4EA1CB-250F-4048-B3FC-F42294ABDC8D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FD704E9F-DB38-4160-B3A0-DE32AC5F5C73}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FD704E9F-DB38-4160-B3A0-DE32AC5F5C73}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FD704E9F-DB38-4160-B3A0-DE32AC5F5C73}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FD704E9F-DB38-4160-B3A0-DE32AC5F5C73}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

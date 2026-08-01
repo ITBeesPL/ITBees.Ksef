@@ -1,60 +1,81 @@
-﻿using ITBees.Ksef.Core;
-using ITBees.Ksef.Transport;
+using ITBees.Ksef;
+using ITBees.Ksef.Configuration;
+using ITBees.Ksef.Invoicing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
+namespace TestKsefConsoleApp;
+
+/// <summary>
+/// Interactive smoke test against the KSeF TEST environment:
+/// generates a sample FA(3) invoice, sends it through an online session and stores the UPO.
+/// </summary>
 public sealed class App
 {
     private readonly ILogger<App> _log;
-    private readonly IKsefClient _client;
-    private readonly KsefOptions _opt;
+    private readonly IKsefInvoiceService _invoiceService;
+    private readonly IFa3XmlGenerator _xmlGenerator;
+    private readonly KsefOptions _options;
 
-    public App(ILogger<App> log, IKsefClient client, IOptions<KsefOptions> opt)
+    public App(ILogger<App> log, IKsefInvoiceService invoiceService, IFa3XmlGenerator xmlGenerator,
+        IOptions<KsefOptions> options)
     {
         _log = log;
-        _client = client;
-        _opt = opt.Value;
+        _invoiceService = invoiceService;
+        _xmlGenerator = xmlGenerator;
+        _options = options.Value;
     }
 
     public async Task RunAsync()
     {
-        _log.LogInformation("=== KSeF 2.0 (TE) console ===");
-        Console.Write("NIP: ");
-        var nip = (Console.ReadLine() ?? "").Trim();
-
-        Console.Write("Token autoryzacyjny (TE): ");
-        var token = (Console.ReadLine() ?? "").Trim();
-
-        if (nip.Length == 0 || token.Length == 0)
+        if (string.IsNullOrWhiteSpace(_options.KsefToken) || string.IsNullOrWhiteSpace(_options.Nip))
         {
-            Console.WriteLine("Brak NIP albo tokenu.");
+            _log.LogError(
+                "Fill in Ksef:KsefToken and Ksef:Nip in appsettings.json (token generated on https://ksef-test.mf.gov.pl for your test NIP).");
             return;
         }
 
-        try
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var invoice = new KsefInvoice
         {
-            var sessionId = await _client.OpenSessionAsync(nip, token, CancellationToken.None);
-            _log.LogInformation("Session opened: {Session}", sessionId);
-
-            var payload = System.Text.Encoding.UTF8.GetBytes("<Test/>"); // TODO: real CMS/PKCS#7
-            var referenceId = await _client.SubmitInvoiceAsync(sessionId, payload, CancellationToken.None);
-            _log.LogInformation("Submitted. Ref: {Ref}", referenceId);
-
-            var status = await _client.GetStatusAsync(sessionId, referenceId.ReferenceId, CancellationToken.None);
-            _log.LogInformation("Status: {Status}; KSeF: {KsefNumber}; Reason: {Reason}",
-                status.Status, status.KsefNumber ?? "-", status.RejectionReason ?? "-");
-
-            if (string.Equals(status.Status, "Accepted", StringComparison.OrdinalIgnoreCase))
+            Number = $"TEST/{DateTime.UtcNow:yyyyMMddHHmmss}",
+            IssueDate = today,
+            SaleDate = today,
+            Currency = "PLN",
+            Buyer = new KsefParty
             {
-                var upo = await _client.DownloadUpoAsync(sessionId, referenceId.ReferenceId, CancellationToken.None);
-                var path = Path.Combine(AppContext.BaseDirectory, $"UPO_{referenceId}.pdf");
-                await File.WriteAllBytesAsync(path, upo);
-                _log.LogInformation("UPO saved to {Path}", path);
-            }
-        }
-        catch (Exception ex)
+                Nip = "1111111111",
+                Name = "F.H.U. Jan Kowalski",
+                AddressLine1 = "ul. Polna 1",
+                AddressLine2 = "00-001 Warszawa"
+            },
+            Lines =
+            {
+                new KsefInvoiceLine
+                {
+                    Name = "Abonament testowy",
+                    Unit = "szt.",
+                    Quantity = 1,
+                    UnitNetPrice = 100.00m,
+                    VatRate = 23
+                }
+            },
+            IsPaid = true,
+            PaymentDate = today
+        };
+
+        var xml = _xmlGenerator.Generate(invoice);
+        _log.LogInformation("Generated FA(3) XML:\n{Xml}", xml);
+
+        var result = await _invoiceService.SendInvoiceXmlAsync(xml);
+        _log.LogInformation("KSeF number: {KsefNumber} (session {Session}, invoice ref {InvoiceRef})",
+            result.KsefNumber, result.SessionReferenceNumber, result.InvoiceReferenceNumber);
+
+        if (result.UpoXml != null)
         {
-            _log.LogError(ex, "Błąd komunikacji z KSeF TE");
+            var upoPath = Path.Combine(AppContext.BaseDirectory, $"UPO_{result.KsefNumber}.xml");
+            await File.WriteAllTextAsync(upoPath, result.UpoXml);
+            _log.LogInformation("UPO saved to {Path}", upoPath);
         }
     }
 }
