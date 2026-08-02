@@ -11,8 +11,8 @@ public enum KsefInvoiceRecordStatus
 }
 
 /// <summary>
-/// Outbox record of a KSeF e-invoice issued for a successfully paid <c>PaymentSession</c>.
-/// Also acts as the invoice number sequencer: (Year, Month, SequenceNumber) is unique.
+/// Outbox record of a KSeF e-invoice issued for a successfully paid<c>PaymentSession</c>.
+/// Also acts as the invoice number sequencer: (Year, Month, SequenceNumber) is unique. 
 /// </summary>
 public class KsefInvoiceRecord
 {
