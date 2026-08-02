@@ -30,14 +30,32 @@ public class KsefInvoiceWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (string.IsNullOrWhiteSpace(_ksefOptions.Value.KsefToken))
+        // Exceptions thrown synchronously here would fail Host.StartAsync and take the whole
+        // application down - yield first so startup never blocks on this worker.
+        await Task.Yield();
+
+        KsefOptions ksefOptions;
+        try
+        {
+            ksefOptions = _ksefOptions.Value;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e,
+                "KSeF invoicing disabled — invalid 'Ksef' configuration section " +
+                "(Ksef:Environment must be one of: Test, Demo, Production). " +
+                "The application keeps running without KSeF invoicing.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(ksefOptions.KsefToken))
         {
             _logger.LogInformation("KSeF invoicing disabled — Ksef:KsefToken is not configured.");
             return;
         }
 
         _logger.LogInformation("KSeF invoice worker started (environment: {Environment}).",
-            _ksefOptions.Value.Environment);
+            ksefOptions.Environment);
 
         while (!stoppingToken.IsCancellationRequested)
         {
