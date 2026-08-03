@@ -69,12 +69,30 @@ public class KsefAuthenticationService : IKsefAuthenticationService
 
     private async Task AuthenticateAsync(CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(_options.KsefToken))
-            throw new InvalidOperationException("KsefOptions.KsefToken is not configured.");
         if (string.IsNullOrWhiteSpace(_options.Nip))
             throw new InvalidOperationException("KsefOptions.Nip is not configured.");
 
         var challenge = await _api.GetAuthChallengeAsync(ct);
+
+        var init = _options.AuthMode == KsefAuthMode.Certificate
+            ? await AuthenticateWithCertificateAsync(challenge, ct)
+            : await AuthenticateWithTokenAsync(challenge, ct);
+
+        await WaitForAuthenticationAsync(init, ct);
+
+        var tokens = await _api.RedeemTokenAsync(init.AuthenticationToken.Token, ct);
+        _accessToken = tokens.AccessToken;
+        _refreshToken = tokens.RefreshToken;
+        _logger.LogInformation(
+            "Authenticated in KSeF for NIP {Nip} using {AuthMode}; access token valid until {ValidUntil}.",
+            _options.Nip, _options.AuthMode, _accessToken.ValidUntil);
+    }
+
+    private async Task<AuthenticationInitResponse> AuthenticateWithTokenAsync(
+        AuthenticationChallengeResponse challenge, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(_options.KsefToken))
+            throw new InvalidOperationException("KsefOptions.KsefToken is not configured.");
 
         var certificates = await _api.GetPublicKeyCertificatesAsync(ct);
         var tokenCertificateInfo = SelectCertificate(certificates, PublicKeyCertificateUsage.KsefTokenEncryption);
@@ -91,14 +109,22 @@ public class KsefAuthenticationService : IKsefAuthenticationService
                 : tokenCertificateInfo.PublicKeyId
         };
 
-        var init = await _api.SubmitKsefTokenAuthenticationAsync(request, ct);
-        await WaitForAuthenticationAsync(init, ct);
+        return await _api.SubmitKsefTokenAuthenticationAsync(request, ct);
+    }
 
-        var tokens = await _api.RedeemTokenAsync(init.AuthenticationToken.Token, ct);
-        _accessToken = tokens.AccessToken;
-        _refreshToken = tokens.RefreshToken;
-        _logger.LogInformation("Authenticated in KSeF for NIP {Nip}; access token valid until {ValidUntil}.",
-            _options.Nip, _accessToken.ValidUntil);
+    private async Task<AuthenticationInitResponse> AuthenticateWithCertificateAsync(
+        AuthenticationChallengeResponse challenge, CancellationToken ct)
+    {
+        if (_options.Certificate is null)
+            throw new InvalidOperationException(
+                "KsefOptions.Certificate is not configured while AuthMode is Certificate.");
+
+        using var signingCertificate = _options.Certificate.Load();
+        var signedXml = KsefXadesSigner.BuildSignedAuthTokenRequest(challenge.Challenge, _options.Nip,
+            signingCertificate);
+
+        return await _api.SubmitXadesSignatureAuthenticationAsync(signedXml,
+            _options.Certificate.VerifyCertificateChain, ct);
     }
 
     private async Task WaitForAuthenticationAsync(AuthenticationInitResponse init, CancellationToken ct)

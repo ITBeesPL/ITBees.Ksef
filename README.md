@@ -10,9 +10,12 @@ Solucja składa się z dwóch pakietów:
 ## Zakres
 
 - **Uwierzytelnianie tokenem KSeF** (pełny flow API 2.0): `POST /auth/challenge` → szyfrowanie `{token}|{timestampMs}` RSA-OAEP (SHA-256) kluczem publicznym MF → `POST /auth/ksef-token` → polling `GET /auth/{referenceNumber}` → `POST /auth/token/redeem` → JWT `accessToken`/`refreshToken` z automatycznym cache i odświeżaniem (`POST /auth/token/refresh`).
+- **Uwierzytelnianie certyfikatem** (`AuthMode = Certificate`): ten sam challenge podpisywany XAdES-BES (enveloped, RSA-SHA256, exc-c14n) i wysyłany na `POST /auth/xades-signature`. Żaden token nie jest przechowywany — wystarczy `.p12`/`.pfx` z kluczem prywatnym.
 - **Sesja interaktywna**: `POST /sessions/online` (formCode FA (3) / 1-0E), obowiązkowe szyfrowanie faktury AES-256-CBC (PKCS#7) kluczem sesyjnym zaszyfrowanym RSA-OAEP, `POST /sessions/online/{ref}/invoices`, polling statusu, `POST /sessions/online/{ref}/close`.
+- **Pobieranie faktur z KSeF** (`IKsefInvoiceQueryService`): `POST /invoices/query/metadata` z zakresem dat i stroną transakcji (Subject1 = sprzedaż, Subject2 = koszty), automatyczne stronicowanie, oraz `GET /invoices/ksef/{numer}` po oryginalny XML faktury.
 - **Generator XML FA(3)** (namespace `http://crd.gov.pl/wzor/2025/06/25/13775/`) z prostego modelu domenowego `KsefInvoice` — walidowany w testach względem oficjalnego XSD MF.
 - **UPO** — pobranie poświadczenia dla faktury po nadaniu numeru KSeF.
+- **Tryb wielofirmowy** (`IKsefClientFactory`) — usługi budowane z `KsefOptions` wyliczonych w czasie żądania (np. odczytanych z bazy), z cache sesji per komplet poświadczeń.
 - Środowiska: TEST (`api-test.ksef.mf.gov.pl/v2`), DEMO (`api-demo.ksef.mf.gov.pl/v2`), PROD (`api.ksef.mf.gov.pl/v2`).
 
 ## Szybki start
@@ -65,7 +68,52 @@ var result = await ksefInvoiceService.SendInvoiceAsync(new KsefInvoice
 // result.UpoXml    — UPO (XML), jeżeli było już dostępne
 ```
 
-Warstwy niższego poziomu (`IKsefApiClient`, `IKsefAuthenticationService`, `IFa3XmlGenerator`, `KsefCryptography`) są publiczne — można ich użyć bezpośrednio, np. do własnej orkiestracji wsadowej.
+Warstwy niższego poziomu (`IKsefApiClient`, `IKsefAuthenticationService`, `IFa3XmlGenerator`, `KsefCryptography`, `KsefXadesSigner`) są publiczne — można ich użyć bezpośrednio, np. do własnej orkiestracji wsadowej.
+
+## Logowanie certyfikatem zamiast tokenem
+
+```json
+{
+  "Ksef": {
+    "Environment": "Test",
+    "Nip": "5555555555",
+    "AuthMode": "Certificate",
+    "Certificate": {
+      "Pkcs12Path": "certs/ksef.p12",
+      "Password": "***",
+      "VerifyCertificateChain": false
+    }
+  }
+}
+```
+
+`Pkcs12Base64` przyjmuje ten sam materiał w Base64 — tak wygodniej, gdy certyfikat leży w bazie, a nie na dysku.
+`VerifyCertificateChain` musi być `false` dla certyfikatów self-signed (akceptuje je wyłącznie środowisko TEST).
+Klucz prywatny ładowany jest z flagą `EphemeralKeySet`, więc proces serwerowy nie zaśmieca magazynu kluczy użytkownika.
+
+## Pobieranie faktur kosztowych
+
+```csharp
+var faktury = await queryService.QueryAsync(new KsefInvoiceQueryFilter
+{
+    From = DateTimeOffset.UtcNow.AddDays(-30),
+    To = DateTimeOffset.UtcNow,
+    SubjectType = InvoiceQuerySubjectType.Subject2   // dokumenty, w których jestem nabywcą
+});
+
+var xml = await queryService.DownloadInvoiceXmlAsync(faktury[0].KsefNumber);
+```
+
+## Wiele firm w jednym procesie
+
+```csharp
+services.AddITBeesKsefClientFactory();   // bez sekcji "Ksef" w konfiguracji
+
+var options = new KsefOptions { Nip = firma.Nip, AuthMode = KsefAuthMode.Certificate, Certificate = ... };
+var wysylka = ksefClientFactory.CreateInvoiceService(options);
+var pobieranie = ksefClientFactory.CreateQueryService(options);
+ksefClientFactory.InvalidateAuthentication(options);  // po zmianie poświadczeń firmy
+```
 
 ## Uwaga operacyjna
 

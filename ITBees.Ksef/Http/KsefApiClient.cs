@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using ITBees.Ksef.Models;
 
@@ -22,6 +23,19 @@ public class KsefApiClient : IKsefApiClient
     public Task<AuthenticationInitResponse> SubmitKsefTokenAuthenticationAsync(
         InitTokenAuthenticationRequest request, CancellationToken ct = default) =>
         PostAsync<AuthenticationInitResponse>("auth/ksef-token", request, accessToken: null, ct);
+
+    public async Task<AuthenticationInitResponse> SubmitXadesSignatureAuthenticationAsync(string signedXml,
+        bool verifyCertificateChain = true, CancellationToken ct = default)
+    {
+        var url = $"auth/xades-signature?verifyCertificateChain={(verifyCertificateChain ? "true" : "false")}";
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            // KSeF expects the raw signed document, not a JSON envelope.
+            Content = new StringContent(signedXml, new UTF8Encoding(false), "application/xml")
+        };
+        using var response = await _http.SendAsync(request, ct);
+        return await ReadAsync<AuthenticationInitResponse>(response, ct);
+    }
 
     public Task<AuthenticationOperationStatusResponse> GetAuthenticationStatusAsync(string referenceNumber,
         string authenticationToken, CancellationToken ct = default) =>
@@ -79,6 +93,14 @@ public class KsefApiClient : IKsefApiClient
         GetStringAsync(
             $"sessions/{Uri.EscapeDataString(sessionReferenceNumber)}/upo/{Uri.EscapeDataString(upoReferenceNumber)}",
             accessToken, ct);
+
+    public Task<InvoiceMetadataQueryResponse> QueryInvoiceMetadataAsync(InvoiceMetadataQueryRequest request,
+        int pageOffset, int pageSize, string accessToken, CancellationToken ct = default) =>
+        PostAsync<InvoiceMetadataQueryResponse>(
+            $"invoices/query/metadata?pageOffset={pageOffset}&pageSize={pageSize}", request, accessToken, ct);
+
+    public Task<string> GetInvoiceXmlAsync(string ksefNumber, string accessToken, CancellationToken ct = default) =>
+        GetStringAsync($"invoices/ksef/{Uri.EscapeDataString(ksefNumber)}", accessToken, ct);
 
     private async Task<T> GetAsync<T>(string url, string? accessToken, CancellationToken ct)
     {

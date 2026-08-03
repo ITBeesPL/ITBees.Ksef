@@ -77,6 +77,23 @@ public static class KsefServiceCollectionExtensions
         services.AddSingleton<IKsefAuthenticationService, KsefAuthenticationService>();
         services.AddSingleton<IFa3XmlGenerator, Fa3XmlGenerator>();
         services.AddTransient<IKsefInvoiceService, KsefInvoiceService>();
+        services.AddTransient<IKsefInvoiceQueryService, KsefInvoiceQueryService>();
+
+        // Multi-tenant path: services built from options resolved per request (e.g. read from a database).
+        services.AddHttpClient(KsefClientFactory.HttpClientName);
+        services.AddSingleton<IKsefClientFactory, KsefClientFactory>();
+        return services;
+    }
+
+    /// <summary>
+    /// Registers only the pieces needed by <see cref="IKsefClientFactory"/>, for hosts that keep every
+    /// company's KSeF credentials in their own storage and never bind a global "Ksef" section.
+    /// </summary>
+    public static IServiceCollection AddITBeesKsefClientFactory(this IServiceCollection services)
+    {
+        services.AddHttpClient(KsefClientFactory.HttpClientName);
+        services.AddSingleton<IFa3XmlGenerator, Fa3XmlGenerator>();
+        services.AddSingleton<IKsefClientFactory, KsefClientFactory>();
         return services;
     }
 }
