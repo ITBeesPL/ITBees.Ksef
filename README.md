@@ -2,9 +2,10 @@
 
 Biblioteka .NET 8 do integracji z **KSeF API 2.0** (Krajowy System e-Faktur) — wersją API obowiązującą od lutego 2026 r.
 
-Solucja składa się z dwóch pakietów:
+Solucja składa się z trzech pakietów:
 
 - **ITBees.Ksef** — czysty klient KSeF API 2.0 + generator FA(3); zero zależności od EF Core i stacka FAS, użyteczny w dowolnej aplikacji .NET.
+- **ITBees.Ksef.Credentials** — magazyn poświadczeń per firma: encja `KsefCredential` z zaszyfrowanym tokenem albo certyfikatem, endpointy do zarządzania nim i test połączenia. Zamienia jednofirmowego klienta w integrację wielofirmową (patrz "Poświadczenia per firma" niżej).
 - **ITBees.Ksef.Fas** — gotowe wpięcie dla projektów opartych o ITBees.FAS.Payments: encja outboxu `KsefInvoiceRecord` z numeracją faktur, rejestracja modelu EF i worker tła wystawiający fakturę KSeF dla każdej opłaconej `PaymentSession` (patrz sekcja "Integracja z FAS" niżej).
 
 ## Zakres
@@ -114,6 +115,54 @@ var wysylka = ksefClientFactory.CreateInvoiceService(options);
 var pobieranie = ksefClientFactory.CreateQueryService(options);
 ksefClientFactory.InvalidateAuthentication(options);  // po zmianie poświadczeń firmy
 ```
+
+## Poświadczenia per firma (ITBees.Ksef.Credentials)
+
+`IKsefClientFactory` przyjmuje `KsefOptions` w czasie żądania, ale skądś trzeba je wziąć. Ten pakiet
+dokłada brakujący kawałek: tabelę z poświadczeniem każdej firmy (token **albo** certyfikat), szyfrowanie
+sekretów (AES-256-GCM), endpointy `/KsefCredential` i `/KsefConnectionTest` oraz `ResolveOptions()`,
+które buduje `KsefOptions` dla firmy z bieżącego żądania.
+
+```csharp
+// 1. DbContext.OnModelCreating — encja nie zna Twojego typu firmy, więc klucz obcy dokładasz sam:
+KsefCredentialsDbModelBuilder.RegisterDbModels(modelBuilder, entity =>
+    entity.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyGuid).OnDelete(DeleteBehavior.Cascade));
+// + DbSet<KsefCredential> KsefCredentials { get; set; }  (nazwa DbSetu = nazwa tabeli)
+// + dotnet ef migrations add AddKsefCredentials
+
+// 2. Rejestracja DI:
+services.AddScoped<IKsefCompanyContext, MojAdapterFirmy>();   // wymagane
+services.AddScoped<IKsefCredentialAuditSink, MojDziennik>();  // opcjonalne
+services.AddKsefCredentials(o =>
+{
+    o.EncryptionKey = configuration["Secrets:EncryptionKey"];  // 32 bajty w Base64
+    o.SystemInfo = "MojaAplikacja";
+});
+
+// 3. Endpointy leżą w tym assembly, więc skan hosta ich nie znajdzie:
+services.AddControllers().AddKsefCredentialControllers();
+```
+
+Host dostarcza jeszcze `IReadOnlyRepository<KsefCredential>` i `IWriteOnlyRepository<KsefCredential>`
+(`ITBees.Interfaces`). Od tego momentu:
+
+```csharp
+var options = ksefCredentialService.ResolveOptions();     // poświadczenie firmy z bieżącego żądania
+var wysylka = ksefClientFactory.CreateInvoiceService(options);
+```
+
+Czego pakiet **nie** robi: nie wystawia i nie pobiera faktur — to zostaje w aplikacji, bo model faktury
+jest jej własny. Pakiet odpowiada wyłącznie za „czym ta firma loguje się do KSeF”.
+
+Uwagi:
+
+- **Sekrety nie wychodzą z serwera.** `KsefCredentialVm` oddaje zamaskowany token i metadane certyfikatu,
+  nigdy treści. Dziennik dostaje `KsefCredentialAuditView` — projekcję bez sekretów, więc token nie ma
+  którędy wyciec nawet wtedy, gdy host zserializuje wszystko, co dostanie.
+- **Podmiana `EncryptionKey` unieważnia wszystkie zapisane poświadczenia** — trzeba je wprowadzić od nowa.
+- **Każde zapytanie jest przycinane do firmy z `IKsefCompanyContext`.** Implementacja, która ufa
+  identyfikatorowi z żądania, pozwoliłaby jednej firmie odczytać poświadczenie drugiej.
+- Zapis poświadczenia unieważnia sesję w cache fabryki, więc stary token przestaje działać od razu.
 
 ## Uwaga operacyjna
 

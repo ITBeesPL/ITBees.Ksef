@@ -15,6 +15,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ITBees.Ksef\ITBees.Ksef.csproj" />
+    <ProjectReference Include="..\ITBees.Ksef.Credentials\ITBees.Ksef.Credentials.csproj" />
+  </ItemGroup>
+
+  <!-- ITBees.Ksef.Credentials wystawia kontrolery, więc ich testy potrzebują typów ASP.NET Core. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
   <ItemGroup>

@@ -11,6 +11,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ITBees.Ksef.Tests", "ITBees
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ITBees.Ksef.Fas", "ITBees.Ksef.Fas\ITBees.Ksef.Fas.csproj", "{FD704E9F-DB38-4160-B3A0-DE32AC5F5C73}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ITBees.Ksef.Credentials", "ITBees.Ksef.Credentials\ITBees.Ksef.Credentials.csproj", "{8511AAEB-F14C-4377-B503-CB6C5F9B1122}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -33,6 +35,10 @@ Global
 		{FD704E9F-DB38-4160-B3A0-DE32AC5F5C73}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{FD704E9F-DB38-4160-B3A0-DE32AC5F5C73}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{FD704E9F-DB38-4160-B3A0-DE32AC5F5C73}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8511AAEB-F14C-4377-B503-CB6C5F9B1122}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8511AAEB-F14C-4377-B503-CB6C5F9B1122}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8511AAEB-F14C-4377-B503-CB6C5F9B1122}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8511AAEB-F14C-4377-B503-CB6C5F9B1122}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
