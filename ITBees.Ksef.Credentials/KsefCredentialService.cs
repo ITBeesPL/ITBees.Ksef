@@ -65,24 +65,7 @@ public class KsefCredentialService : IKsefCredentialService
         if (credential == null)
             return new KsefCredentialVm { Configured = false };
 
-        return new KsefCredentialVm
-        {
-            Configured = true,
-            Kind = credential.Kind,
-            Environment = credential.Environment,
-            Nip = credential.Nip,
-            MaskedToken = credential.Kind == KsefCredentialKind.Token ? MaskToken(credential) : null,
-            CertificateFileName = credential.CertificateFileName,
-            CertificateSubject = credential.CertificateSubject,
-            CertificateThumbprint = credential.CertificateThumbprint,
-            CertificateValidFrom = credential.CertificateValidFrom,
-            CertificateValidTo = credential.CertificateValidTo,
-            CertificateExpired = credential.IsCertificateExpired(DateTime.UtcNow),
-            LastVerifiedAt = credential.LastVerifiedAt,
-            LastError = credential.LastError,
-            Created = credential.Created,
-            Updated = credential.Updated
-        };
+        return ToVm(credential);
     }
 
     public KsefCredentialVm Save(KsefCredentialIm im)
@@ -104,7 +87,7 @@ public class KsefCredentialService : IKsefCredentialService
             }, im, nip));
 
             _audit.Created(companyGuid, KsefCredentialAuditView.From(created));
-            return GetStatus();
+            return ToVm(created);
         }
 
         // The previous KSeF session is stale even when only the context NIP changed.
@@ -116,7 +99,8 @@ public class KsefCredentialService : IKsefCredentialService
             .First();
 
         _audit.Updated(companyGuid, before, KsefCredentialAuditView.From(updated));
-        return GetStatus();
+        // Nie GetStatus(): kontekst RO wciąż śledzi encję sprzed aktualizacji i oddałby stare metadane.
+        return ToVm(updated);
     }
 
     public void Delete()
@@ -150,7 +134,8 @@ public class KsefCredentialService : IKsefCredentialService
                 From = DateTimeOffset.UtcNow.AddDays(-1),
                 To = DateTimeOffset.UtcNow,
                 SubjectType = InvoiceQuerySubjectType.Subject2,
-                PageSize = 1,
+                // KSeF walidacja: pageSize musi być w przedziale 10-250.
+                PageSize = 10,
                 MaxInvoices = 1
             }, ct);
 
@@ -321,6 +306,28 @@ public class KsefCredentialService : IKsefCredentialService
             _logger.LogDebug(ex, "Could not invalidate the KSeF session of company {CompanyGuid}.",
                 credential.CompanyGuid);
         }
+    }
+
+    private KsefCredentialVm ToVm(KsefCredential credential)
+    {
+        return new KsefCredentialVm
+        {
+            Configured = true,
+            Kind = credential.Kind,
+            Environment = credential.Environment,
+            Nip = credential.Nip,
+            MaskedToken = credential.Kind == KsefCredentialKind.Token ? MaskToken(credential) : null,
+            CertificateFileName = credential.CertificateFileName,
+            CertificateSubject = credential.CertificateSubject,
+            CertificateThumbprint = credential.CertificateThumbprint,
+            CertificateValidFrom = credential.CertificateValidFrom,
+            CertificateValidTo = credential.CertificateValidTo,
+            CertificateExpired = credential.IsCertificateExpired(DateTime.UtcNow),
+            LastVerifiedAt = credential.LastVerifiedAt,
+            LastError = credential.LastError,
+            Created = credential.Created,
+            Updated = credential.Updated
+        };
     }
 
     private string? MaskToken(KsefCredential credential)

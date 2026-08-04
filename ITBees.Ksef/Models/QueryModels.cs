@@ -82,16 +82,30 @@ public class KsefInvoiceMetadata
     /// <summary>Document type reported by KSeF: VAT, KOR, ZAL, ROZ, UPR, KOR_ZAL, KOR_ROZ.</summary>
     public string? InvoiceType { get; set; }
 
-    public string? FormCode { get; set; }
+    /// <summary>Invoice schema descriptor, e.g. systemCode "FA (3)".</summary>
+    public FormCode? FormCode { get; set; }
 }
 
 public class KsefInvoiceParty
 {
-    /// <summary>NIP for Polish entities; may be empty for consumers.</summary>
+    /// <summary>Seller side only: NIP for Polish entities.</summary>
     public string? Nip { get; set; }
 
-    /// <summary>Present on foreign counterparties instead of <see cref="Nip"/>.</summary>
-    public string? Identifier { get; set; }
+    /// <summary>Buyer side only: KSeF wraps the id in an object (Nip / VatUe / Other / None).</summary>
+    public KsefPartyIdentifier? Identifier { get; set; }
 
     public string? Name { get; set; }
+
+    /// <summary>Best available tax id regardless of which side of the invoice the party is.</summary>
+    [JsonIgnore]
+    public string? TaxIdentifier => string.IsNullOrWhiteSpace(Nip) ? Identifier?.Value : Nip;
+}
+
+public class KsefPartyIdentifier
+{
+    /// <summary>Nip | VatUe | Other | None.</summary>
+    public string? Type { get; set; }
+
+    /// <summary>Absent when <see cref="Type"/> is None.</summary>
+    public string? Value { get; set; }
 }
