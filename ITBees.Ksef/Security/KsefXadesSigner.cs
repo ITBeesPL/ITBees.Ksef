@@ -11,7 +11,8 @@ namespace ITBees.Ksef.Security;
 /// <summary>
 /// Builds and signs the <c>AuthTokenRequest</c> document consumed by <c>POST /auth/xades-signature</c>.
 /// The signature is an enveloped XAdES-BES: two references (whole document + SignedProperties),
-/// RSA-SHA256, exclusive canonicalization, certificate carried in KeyInfo/X509Data.
+/// RSA-SHA256 or ECDSA-SHA256 (KSeF-issued certificates carry EC keys), exclusive
+/// canonicalization, certificate carried in KeyInfo/X509Data.
 /// </summary>
 public static class KsefXadesSigner
 {
@@ -20,9 +21,18 @@ public static class KsefXadesSigner
     private const string XadesNamespace = "http://uri.etsi.org/01903/v1.3.2#";
     private const string SignedPropertiesType = "http://uri.etsi.org/01903#SignedProperties";
     private const string RsaSha256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
+    private const string EcdsaSha256 = "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256";
     private const string Sha256 = "http://www.w3.org/2001/04/xmlenc#sha256";
     private const string SignatureId = "Signature";
     private const string SignedPropertiesId = "SignedProperties";
+
+    static KsefXadesSigner()
+    {
+        // SignedXml looks the signature algorithm up in CryptoConfig, which ships without an
+        // ECDSA entry — without this registration ComputeSignature/CheckSignature would throw
+        // "SignatureDescription could not be created" for every KSeF-issued (EC) certificate.
+        CryptoConfig.AddAlgorithm(typeof(EcdsaSha256SignatureDescription), EcdsaSha256);
+    }
 
     /// <summary>
     /// Renders the unsigned AuthTokenRequest for a challenge returned by <c>POST /auth/challenge</c>.
@@ -58,7 +68,7 @@ public static class KsefXadesSigner
     /// Signs the given XML in place with an enveloped XAdES-BES signature.
     /// </summary>
     /// <param name="xml">Document to sign (typically the result of <see cref="BuildAuthTokenRequest"/>).</param>
-    /// <param name="certificate">Certificate with an accessible RSA private key.</param>
+    /// <param name="certificate">Certificate with an accessible RSA or ECDSA private key.</param>
     /// <param name="signingTime">Value of xades:SigningTime; defaults to now (UTC).</param>
     public static string Sign(string xml, X509Certificate2 certificate, DateTimeOffset? signingTime = null)
     {
@@ -66,17 +76,18 @@ public static class KsefXadesSigner
             throw new InvalidOperationException(
                 "The KSeF signing certificate does not contain a private key — export it as .p12/.pfx including the key.");
 
-        using var rsa = certificate.GetRSAPrivateKey()
-                        ?? throw new InvalidOperationException(
-                            "Only RSA certificates are supported for the KSeF XAdES authentication.");
+        using AsymmetricAlgorithm privateKey = certificate.GetRSAPrivateKey()
+                                               ?? (AsymmetricAlgorithm?)certificate.GetECDsaPrivateKey()
+                                               ?? throw new InvalidOperationException(
+                                                   "Only RSA and ECDSA certificates are supported for the KSeF XAdES authentication.");
 
         var document = new XmlDocument { PreserveWhitespace = true };
         document.LoadXml(xml);
 
-        var signedXml = new XadesSignedXml(document) { SigningKey = rsa };
+        var signedXml = new XadesSignedXml(document) { SigningKey = privateKey };
         signedXml.Signature.Id = SignatureId;
         signedXml.SignedInfo!.CanonicalizationMethod = SignedXml.XmlDsigExcC14NTransformUrl;
-        signedXml.SignedInfo.SignatureMethod = RsaSha256;
+        signedXml.SignedInfo.SignatureMethod = privateKey is RSA ? RsaSha256 : EcdsaSha256;
 
         var documentReference = new Reference(string.Empty) { DigestMethod = Sha256 };
         documentReference.AddTransform(new XmlDsigEnvelopedSignatureTransform());
@@ -247,5 +258,65 @@ public static class KsefXadesSigner
         }
 
         return new UTF8Encoding(false).GetString(buffer.ToArray());
+    }
+}
+
+/// <summary>
+/// CryptoConfig instantiates this by reflection (registered in <see cref="KsefXadesSigner"/>'s
+/// static constructor) and rejects types not accessible from outside their assembly — hence
+/// public despite being an implementation detail. ECDsa.SignHash/VerifyHash already use the
+/// IEEE P1363 (r||s) signature layout required by xmldsig, so no format conversion is needed.
+/// </summary>
+public sealed class EcdsaSha256SignatureDescription : SignatureDescription
+{
+    public EcdsaSha256SignatureDescription()
+    {
+        KeyAlgorithm = typeof(ECDsa).AssemblyQualifiedName;
+    }
+
+    public override HashAlgorithm CreateDigest() => SHA256.Create();
+
+    public override AsymmetricSignatureFormatter CreateFormatter(AsymmetricAlgorithm key)
+    {
+        var formatter = new EcdsaSignatureFormatter();
+        formatter.SetKey(key);
+        return formatter;
+    }
+
+    public override AsymmetricSignatureDeformatter CreateDeformatter(AsymmetricAlgorithm key)
+    {
+        var deformatter = new EcdsaSignatureDeformatter();
+        deformatter.SetKey(key);
+        return deformatter;
+    }
+
+    private sealed class EcdsaSignatureFormatter : AsymmetricSignatureFormatter
+    {
+        private ECDsa? _key;
+
+        public override void SetKey(AsymmetricAlgorithm key) => _key = (ECDsa)key;
+
+        // The digest is fixed by the algorithm URI, so the name passed by SignedXml is irrelevant.
+        public override void SetHashAlgorithm(string strName)
+        {
+        }
+
+        public override byte[] CreateSignature(byte[] rgbHash) =>
+            (_key ?? throw new InvalidOperationException("Signing key was not set.")).SignHash(rgbHash);
+    }
+
+    private sealed class EcdsaSignatureDeformatter : AsymmetricSignatureDeformatter
+    {
+        private ECDsa? _key;
+
+        public override void SetKey(AsymmetricAlgorithm key) => _key = (ECDsa)key;
+
+        public override void SetHashAlgorithm(string strName)
+        {
+        }
+
+        public override bool VerifySignature(byte[] rgbHash, byte[] rgbSignature) =>
+            (_key ?? throw new InvalidOperationException("Verification key was not set.")).VerifyHash(rgbHash,
+                rgbSignature);
     }
 }

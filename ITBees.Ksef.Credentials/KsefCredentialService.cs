@@ -247,14 +247,26 @@ public class KsefCredentialService : IKsefCredentialService
         if (string.IsNullOrWhiteSpace(im.CertificateBase64))
             throw new ArgumentException("Plik certyfikatu jest wymagany.");
 
-        byte[] raw;
-        try
+        var raw = DecodeBase64(im.CertificateBase64, "Certyfikat");
+
+        // KSeF hands certificates out as a .crt/.key PEM pair — accepted here as-is and folded
+        // into the PKCS#12 container the rest of the pipeline already understands.
+        if (!string.IsNullOrWhiteSpace(im.PrivateKeyPemBase64))
         {
-            raw = Convert.FromBase64String(im.CertificateBase64);
+            raw = PemCertificateImporter.ToPkcs12(raw,
+                DecodeBase64(im.PrivateKeyPemBase64, "Klucz prywatny"), im.CertificatePassword);
         }
-        catch (FormatException)
+        else if (PemCertificateImporter.LooksLikePem(raw))
         {
-            throw new ArgumentException("Certyfikat nie jest poprawnie zakodowany w Base64.");
+            // A lone PEM certificate has no key, so it can never sign the KSeF challenge —
+            // better to say what is missing than to fail parsing it as PKCS#12.
+            if (!PemCertificateImporter.ContainsPrivateKey(raw))
+                throw new ArgumentException(
+                    "Wgrany plik to sam certyfikat (.crt) — dodaj także plik klucza prywatnego (.key) " +
+                    "wygenerowany razem z nim w KSeF.");
+
+            // A single combined PEM (certificate + key in one file) also converts cleanly.
+            raw = PemCertificateImporter.ToPkcs12(raw, raw, im.CertificatePassword);
         }
 
         // Loading it here instead of on the first invoice send turns "KSeF rejected the invoice"
@@ -278,6 +290,18 @@ public class KsefCredentialService : IKsefCredentialService
         credential.CertificateValidFrom = certificate.NotBefore.ToUniversalTime();
         credential.CertificateValidTo = certificate.NotAfter.ToUniversalTime();
         credential.EncryptedToken = null;
+    }
+
+    private static byte[] DecodeBase64(string value, string subject)
+    {
+        try
+        {
+            return Convert.FromBase64String(value);
+        }
+        catch (FormatException)
+        {
+            throw new ArgumentException($"{subject} nie jest poprawnie zakodowany w Base64.");
+        }
     }
 
     private static X509Certificate2 LoadCertificate(byte[] raw, string? password)

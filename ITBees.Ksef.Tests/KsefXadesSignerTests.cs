@@ -77,6 +77,26 @@ public class KsefXadesSignerTests
     }
 
     [Fact]
+    public void Sign_WithEcdsaCertificate_ProducesVerifiableEcdsaSha256Signature()
+    {
+        // KSeF-issued certificates (CCK KSeF) carry EC keys, so this path is what production uses.
+        using var certificate = CreateSelfSignedEcdsaCertificate();
+
+        var signed = KsefXadesSigner.BuildSignedAuthTokenRequest("challenge-value", "5252445761", certificate);
+
+        var document = Load(signed);
+        var namespaces = CreateNamespaceManager(document);
+
+        Assert.Equal("http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256",
+            (document.SelectSingleNode("//ds:SignedInfo/ds:SignatureMethod", namespaces) as XmlElement)
+            ?.GetAttribute("Algorithm"));
+
+        var signedXml = new SignedXml(document);
+        signedXml.LoadXml((XmlElement)document.GetElementsByTagName("Signature", DsNamespace)[0]!);
+        Assert.True(signedXml.CheckSignature(certificate, verifySignatureOnly: true));
+    }
+
+    [Fact]
     public void Sign_ThrowsWhenCertificateHasNoPrivateKey()
     {
         using var withKey = CreateSelfSignedCertificate();
@@ -87,6 +107,19 @@ public class KsefXadesSignerTests
                 publicOnly));
 
         Assert.Contains("private key", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static X509Certificate2 CreateSelfSignedEcdsaCertificate()
+    {
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var request = new CertificateRequest("CN=Jan Testowy, SERIALNUMBER=PNOPL-82040510152, C=PL",
+            ecdsa, HashAlgorithmName.SHA256);
+
+        var certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1),
+            DateTimeOffset.UtcNow.AddYears(1));
+
+        return new X509Certificate2(certificate.Export(X509ContentType.Pkcs12, "pwd"), "pwd",
+            X509KeyStorageFlags.EphemeralKeySet);
     }
 
     private static X509Certificate2 CreateSelfSignedCertificate()
