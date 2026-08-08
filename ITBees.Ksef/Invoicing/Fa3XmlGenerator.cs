@@ -31,9 +31,11 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
         var seller = invoice.Seller ?? SellerFromOptions();
         var saleDate = invoice.SaleDate ?? invoice.IssueDate;
 
+        // On a correction the aggregates carry the difference rather than the document value:
+        // "before" rows are subtracted, "after" rows added. A plain invoice has nothing to subtract.
         var vatTotals = invoice.Lines
             .GroupBy(l => l.VatRate)
-            .ToDictionary(g => g.Key, g => g.Sum(l => l.GetNetValue()));
+            .ToDictionary(g => g.Key, g => g.Sum(l => l.StateBeforeCorrection ? -l.GetNetValue() : l.GetNetValue()));
 
         var totalNet = vatTotals.Values.Sum();
         var totalVat = vatTotals.Sum(kv => Math.Round(kv.Value * kv.Key / 100m, 2, MidpointRounding.AwayFromZero));
@@ -48,20 +50,28 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
         AppendVatAggregates(fa, ns, vatTotals);
         fa.Add(new XElement(ns + "P_15", FormatAmount(totalGross)));
         fa.Add(BuildAdnotacje(ns));
-        fa.Add(new XElement(ns + "RodzajFaktury", "VAT"));
+        fa.Add(new XElement(ns + "RodzajFaktury", invoice.Correction == null ? "VAT" : "KOR"));
+        if (invoice.Correction != null)
+            AppendCorrectionData(fa, ns, invoice.Correction);
 
         var lineNumber = 0;
         foreach (var line in invoice.Lines)
         {
             lineNumber++;
-            fa.Add(new XElement(ns + "FaWiersz",
+            var row = new XElement(ns + "FaWiersz",
                 new XElement(ns + "NrWierszaFa", lineNumber),
                 new XElement(ns + "P_7", line.Name),
                 new XElement(ns + "P_8A", line.Unit),
                 new XElement(ns + "P_8B", FormatQuantity(line.Quantity)),
                 new XElement(ns + "P_9A", FormatAmount(line.UnitNetPrice)),
                 new XElement(ns + "P_11", FormatAmount(line.GetNetValue())),
-                new XElement(ns + "P_12", line.VatRate.ToString(CultureInfo.InvariantCulture))));
+                new XElement(ns + "P_12", line.VatRate.ToString(CultureInfo.InvariantCulture)));
+
+            // StanPrzed closes the row sequence in the schema, so it has to be added last.
+            if (line.StateBeforeCorrection)
+                row.Add(new XElement(ns + "StanPrzed", 1));
+
+            fa.Add(row);
         }
 
         if (invoice.IsPaid)
@@ -112,6 +122,46 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
         if (unsupportedRate != null)
             throw new NotSupportedException(
                 $"VAT rate {unsupportedRate.VatRate}% is not supported by this generator (supported: 23, 22, 8, 7, 5, 4, 0).");
+
+        if (invoice.Correction == null)
+        {
+            if (invoice.Lines.Any(l => l.StateBeforeCorrection))
+                throw new ArgumentException(
+                    "Lines marked as the state before correction require Correction to be set.", nameof(invoice));
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(invoice.Correction.Reason))
+            throw new ArgumentException("Correction reason (PrzyczynaKorekty) is required.", nameof(invoice));
+        if (string.IsNullOrWhiteSpace(invoice.Correction.CorrectedNumber))
+            throw new ArgumentException("Corrected invoice number (NrFaKorygowanej) is required.", nameof(invoice));
+        if (invoice.Correction.CorrectedIssueDate == default)
+            throw new ArgumentException(
+                "Corrected invoice issue date (DataWystFaKorygowanej) is required.", nameof(invoice));
+    }
+
+    /// <summary>Emits PrzyczynaKorekty / TypKorekty / DaneFaKorygowanej, which follow RodzajFaktury in the schema.</summary>
+    private static void AppendCorrectionData(XElement fa, XNamespace ns, KsefInvoiceCorrection correction)
+    {
+        fa.Add(new XElement(ns + "PrzyczynaKorekty", correction.Reason));
+        fa.Add(new XElement(ns + "TypKorekty", (int)correction.Type));
+
+        var corrected = new XElement(ns + "DaneFaKorygowanej",
+            new XElement(ns + "DataWystFaKorygowanej", FormatDate(correction.CorrectedIssueDate)),
+            new XElement(ns + "NrFaKorygowanej", correction.CorrectedNumber));
+
+        if (string.IsNullOrWhiteSpace(correction.CorrectedKsefNumber))
+        {
+            // The corrected invoice never went through KSeF (paper / pre-KSeF document).
+            corrected.Add(new XElement(ns + "NrKSeFN", 1));
+        }
+        else
+        {
+            corrected.Add(new XElement(ns + "NrKSeF", 1));
+            corrected.Add(new XElement(ns + "NrKSeFFaKorygowanej", correction.CorrectedKsefNumber));
+        }
+
+        fa.Add(corrected);
     }
 
     private KsefParty SellerFromOptions()
