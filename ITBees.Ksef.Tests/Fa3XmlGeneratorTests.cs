@@ -149,4 +149,135 @@ public class Fa3XmlGeneratorTests
         invoice.Lines.Clear();
         Assert.Throws<ArgumentException>(() => CreateGenerator().Generate(invoice));
     }
+
+    /// <summary>Original: 10 h × 250 PLN at 23%. Correction: 8 h — 500 PLN net less.</summary>
+    private static KsefInvoice CreateCorrection() => new()
+    {
+        Number = "KOR/2026/08/001",
+        IssueDate = new DateOnly(2026, 8, 20),
+        SaleDate = new DateOnly(2026, 8, 20),
+        Currency = "PLN",
+        Buyer = new KsefParty
+        {
+            Nip = "1111111111",
+            Name = "Nabywca S.A.",
+            AddressLine1 = "ul. Polna 2",
+            AddressLine2 = "11-111 Kraków"
+        },
+        Correction = new KsefInvoiceCorrection
+        {
+            Reason = "Błąd w cenie",
+            Type = KsefCorrectionType.OriginalPeriod,
+            CorrectedNumber = "FV/2026/08/001",
+            CorrectedIssueDate = new DateOnly(2026, 8, 1),
+            CorrectedKsefNumber = "1111111111-20260801-0100A1B2C3D4-45"
+        },
+        Lines =
+        {
+            new KsefInvoiceLine
+            {
+                Name = "Konsultacje IT", Unit = "h", Quantity = 10, UnitNetPrice = 250m, VatRate = 23,
+                StateBeforeCorrection = true
+            },
+            new KsefInvoiceLine { Name = "Konsultacje IT", Unit = "h", Quantity = 8, UnitNetPrice = 250m, VatRate = 23 }
+        }
+    };
+
+    [Fact]
+    public void Generate_MarksCorrectionAsKorAndDescribesCorrectedInvoice()
+    {
+        var xml = CreateGenerator().Generate(CreateCorrection());
+        var fa = XDocument.Parse(xml).Root!.Element(Ns + "Fa")!;
+
+        Assert.Equal("KOR", fa.Element(Ns + "RodzajFaktury")!.Value);
+        Assert.Equal("Błąd w cenie", fa.Element(Ns + "PrzyczynaKorekty")!.Value);
+        Assert.Equal("1", fa.Element(Ns + "TypKorekty")!.Value);
+
+        var corrected = fa.Element(Ns + "DaneFaKorygowanej")!;
+        Assert.Equal("2026-08-01", corrected.Element(Ns + "DataWystFaKorygowanej")!.Value);
+        Assert.Equal("FV/2026/08/001", corrected.Element(Ns + "NrFaKorygowanej")!.Value);
+        Assert.Equal("1", corrected.Element(Ns + "NrKSeF")!.Value);
+        Assert.Equal("1111111111-20260801-0100A1B2C3D4-45",
+            corrected.Element(Ns + "NrKSeFFaKorygowanej")!.Value);
+        Assert.Null(corrected.Element(Ns + "NrKSeFN"));
+    }
+
+    [Fact]
+    public void Generate_MarksInvoiceCorrectedOutsideKsefWithNrKSeFN()
+    {
+        var invoice = CreateCorrection();
+        invoice.Correction!.CorrectedKsefNumber = null;
+
+        var corrected = XDocument.Parse(CreateGenerator().Generate(invoice)).Root!
+            .Element(Ns + "Fa")!.Element(Ns + "DaneFaKorygowanej")!;
+
+        Assert.Equal("1", corrected.Element(Ns + "NrKSeFN")!.Value);
+        Assert.Null(corrected.Element(Ns + "NrKSeF"));
+        Assert.Null(corrected.Element(Ns + "NrKSeFFaKorygowanej"));
+    }
+
+    [Fact]
+    public void Generate_FlagsRowsWithTheStateBeforeCorrection()
+    {
+        var xml = CreateGenerator().Generate(CreateCorrection());
+        var rows = XDocument.Parse(xml).Root!.Element(Ns + "Fa")!.Elements(Ns + "FaWiersz").ToList();
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("1", rows[0].Element(Ns + "NrWierszaFa")!.Value);
+        Assert.Equal("1", rows[0].Element(Ns + "StanPrzed")!.Value);
+        Assert.Equal("2", rows[1].Element(Ns + "NrWierszaFa")!.Value);
+        Assert.Null(rows[1].Element(Ns + "StanPrzed"));
+    }
+
+    [Fact]
+    public void Generate_ReportsCorrectionAggregatesAsTheDifference()
+    {
+        var fa = XDocument.Parse(CreateGenerator().Generate(CreateCorrection())).Root!.Element(Ns + "Fa")!;
+
+        // 2000 po korekcie − 2500 przed korektą
+        Assert.Equal("-500.00", fa.Element(Ns + "P_13_1")!.Value);
+        Assert.Equal("-115.00", fa.Element(Ns + "P_14_1")!.Value);
+        Assert.Equal("-615.00", fa.Element(Ns + "P_15")!.Value);
+    }
+
+    /// <summary>Correcting an invoice down to zero leaves only the "before" rows.</summary>
+    [Fact]
+    public void Generate_ReversesWholeInvoiceWhenNoRowsRemainAfterCorrection()
+    {
+        var invoice = CreateCorrection();
+        invoice.Lines.RemoveAll(l => !l.StateBeforeCorrection);
+
+        var fa = XDocument.Parse(CreateGenerator().Generate(invoice)).Root!.Element(Ns + "Fa")!;
+
+        Assert.Equal("-2500.00", fa.Element(Ns + "P_13_1")!.Value);
+        Assert.Equal("-575.00", fa.Element(Ns + "P_14_1")!.Value);
+        Assert.Equal("-3075.00", fa.Element(Ns + "P_15")!.Value);
+    }
+
+    [Fact]
+    public void Generate_ThrowsWhenCorrectionHasNoReason()
+    {
+        var invoice = CreateCorrection();
+        invoice.Correction!.Reason = "   ";
+
+        Assert.Throws<ArgumentException>(() => CreateGenerator().Generate(invoice));
+    }
+
+    [Fact]
+    public void Generate_ThrowsWhenCorrectedInvoiceIsNotIdentified()
+    {
+        var invoice = CreateCorrection();
+        invoice.Correction!.CorrectedNumber = "";
+
+        Assert.Throws<ArgumentException>(() => CreateGenerator().Generate(invoice));
+    }
+
+    [Fact]
+    public void Generate_ThrowsWhenStateBeforeCorrectionIsUsedOnPlainInvoice()
+    {
+        var invoice = CreateInvoice();
+        invoice.Lines[0].StateBeforeCorrection = true;
+
+        Assert.Throws<ArgumentException>(() => CreateGenerator().Generate(invoice));
+    }
 }

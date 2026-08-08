@@ -113,6 +113,74 @@ public class Fa3XsdValidationTests
         Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
     }
 
+    [Fact]
+    public void GeneratedCorrection_IsValidAgainstOfficialFa3Xsd()
+    {
+        var errors = Validate(CreateGenerator().Generate(CreateCorrection()));
+
+        Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
+    }
+
+    [Fact]
+    public void GeneratedCorrectionOfInvoiceIssuedOutsideKsef_IsValidAgainstOfficialFa3Xsd()
+    {
+        var invoice = CreateCorrection();
+        invoice.Correction!.CorrectedKsefNumber = null;
+
+        var errors = Validate(CreateGenerator().Generate(invoice));
+
+        Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
+    }
+
+    /// <summary>A correction down to zero: negative aggregates and rows carrying only the state before.</summary>
+    [Fact]
+    public void GeneratedFullReversal_IsValidAgainstOfficialFa3Xsd()
+    {
+        var invoice = CreateCorrection();
+        invoice.Lines.RemoveAll(l => !l.StateBeforeCorrection);
+
+        var errors = Validate(CreateGenerator().Generate(invoice));
+
+        Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
+    }
+
+    private static KsefInvoice CreateCorrection() => new()
+    {
+        Number = "KOR/2026/08/001",
+        IssueDate = new DateOnly(2026, 8, 20),
+        Currency = "PLN",
+        Buyer = new KsefParty
+        {
+            Nip = "1111111111",
+            Name = "Nabywca S.A.",
+            AddressLine1 = "ul. Polna 2",
+            AddressLine2 = "11-111 Kraków"
+        },
+        Correction = new KsefInvoiceCorrection
+        {
+            Reason = "Zwrot części usług",
+            Type = KsefCorrectionType.CorrectionPeriod,
+            CorrectedNumber = "FV/2026/08/001",
+            CorrectedIssueDate = new DateOnly(2026, 8, 1),
+            CorrectedKsefNumber = "1111111111-20260801-0100A1B2C3D4-45"
+        },
+        Lines =
+        {
+            new KsefInvoiceLine
+            {
+                Name = "Konsultacje IT", Unit = "h", Quantity = 10, UnitNetPrice = 250m, VatRate = 23,
+                StateBeforeCorrection = true
+            },
+            new KsefInvoiceLine
+            {
+                Name = "Licencja", Unit = "szt.", Quantity = 1, UnitNetPrice = 120m, VatRate = 8,
+                StateBeforeCorrection = true
+            },
+            new KsefInvoiceLine { Name = "Konsultacje IT", Unit = "h", Quantity = 8, UnitNetPrice = 250m, VatRate = 23 },
+            new KsefInvoiceLine { Name = "Licencja", Unit = "szt.", Quantity = 1, UnitNetPrice = 120m, VatRate = 8 }
+        }
+    };
+
     /// <summary>Redirects the http schemaLocation of StrukturyDanych/ElementarneTypyDanych/KodyKrajow to local files.</summary>
     private sealed class LocalSchemaResolver : XmlUrlResolver
     {
