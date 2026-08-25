@@ -280,4 +280,138 @@ public class Fa3XmlGeneratorTests
 
         Assert.Throws<ArgumentException>(() => CreateGenerator().Generate(invoice));
     }
+
+    [Fact]
+    public void Generate_EmitsNotesAsInvoiceFooter()
+    {
+        var invoice = CreateInvoice();
+        invoice.Notes = "Zamówienie nr 44/2026.\nTowar odebrano osobiście.";
+
+        var root = XDocument.Parse(CreateGenerator().Generate(invoice)).Root!;
+        var stopka = root.Element(Ns + "Stopka")!;
+
+        Assert.Equal("Zamówienie nr 44/2026.\nTowar odebrano osobiście.",
+            stopka.Element(Ns + "Informacje")!.Element(Ns + "StopkaFaktury")!.Value);
+        // Stopka follows Fa in the schema sequence.
+        Assert.Equal(Ns + "Fa", (stopka.PreviousNode as XElement)!.Name);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("   ")]
+    public void Generate_OmitsStopkaWhenNotesAreBlank(string? notes)
+    {
+        var invoice = CreateInvoice();
+        invoice.Notes = notes;
+
+        var root = XDocument.Parse(CreateGenerator().Generate(invoice)).Root!;
+
+        Assert.Null(root.Element(Ns + "Stopka"));
+    }
+
+    [Fact]
+    public void Generate_ThrowsWhenNotesExceedStopkaFakturyLimit()
+    {
+        var invoice = CreateInvoice();
+        invoice.Notes = new string('a', 3501);
+
+        Assert.Throws<ArgumentException>(() => CreateGenerator().Generate(invoice));
+    }
+
+    /// <summary>Advance invoice: 1230 gross received at 23% and 270 gross at 8% against a 2310 order.</summary>
+    private static KsefInvoice CreateAdvance() => new()
+    {
+        Number = "ZAL/2026/08/001",
+        IssueDate = new DateOnly(2026, 8, 20),
+        // On an advance invoice P_6 is the date the payment was received.
+        SaleDate = new DateOnly(2026, 8, 18),
+        Currency = "PLN",
+        Buyer = new KsefParty
+        {
+            Nip = "1111111111",
+            Name = "Nabywca S.A.",
+            AddressLine1 = "ul. Polna 2",
+            AddressLine2 = "11-111 Kraków"
+        },
+        Advance = new KsefAdvance
+        {
+            Payments =
+            {
+                new KsefAdvancePayment { VatRate = 23, GrossAmount = 1230m },
+                new KsefAdvancePayment { VatRate = 8, GrossAmount = 270m }
+            },
+            OrderGrossTotal = 2310m,
+            OrderLines =
+            {
+                new KsefInvoiceLine { Name = "Sprzęt", Unit = "szt.", Quantity = 1, UnitNetPrice = 1000m, VatRate = 23 },
+                new KsefInvoiceLine { Name = "Montaż", Unit = "usł.", Quantity = 1, UnitNetPrice = 1000m, VatRate = 8 }
+            }
+        },
+        IsPaid = true,
+        PaymentDate = new DateOnly(2026, 8, 18)
+    };
+
+    [Fact]
+    public void Generate_MarksAdvanceAsZalAndComputesTaxFromReceivedPayment()
+    {
+        var fa = XDocument.Parse(CreateGenerator().Generate(CreateAdvance())).Root!.Element(Ns + "Fa")!;
+
+        Assert.Equal("ZAL", fa.Element(Ns + "RodzajFaktury")!.Value);
+        // KP = ZB × SP / (100 + SP): 1230 → 230 (23%), 270 → 20 (8%); net is the remainder.
+        Assert.Equal("1000.00", fa.Element(Ns + "P_13_1")!.Value);
+        Assert.Equal("230.00", fa.Element(Ns + "P_14_1")!.Value);
+        Assert.Equal("250.00", fa.Element(Ns + "P_13_2")!.Value);
+        Assert.Equal("20.00", fa.Element(Ns + "P_14_2")!.Value);
+        // P_15 is the received payment, not the order value.
+        Assert.Equal("1500.00", fa.Element(Ns + "P_15")!.Value);
+        Assert.Equal("2026-08-18", fa.Element(Ns + "P_6")!.Value);
+        // The order goes into Zamowienie — an advance invoice has no FaWiersz rows.
+        Assert.Empty(fa.Elements(Ns + "FaWiersz"));
+    }
+
+    [Fact]
+    public void Generate_DescribesTheOrderInZamowienieNode()
+    {
+        var fa = XDocument.Parse(CreateGenerator().Generate(CreateAdvance())).Root!.Element(Ns + "Fa")!;
+        var zamowienie = fa.Element(Ns + "Zamowienie")!;
+
+        Assert.Equal("2310.00", zamowienie.Element(Ns + "WartoscZamowienia")!.Value);
+        var rows = zamowienie.Elements(Ns + "ZamowienieWiersz").ToList();
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("Sprzęt", rows[0].Element(Ns + "P_7Z")!.Value);
+        Assert.Equal("1000.00", rows[0].Element(Ns + "P_11NettoZ")!.Value);
+        Assert.Equal("230.00", rows[0].Element(Ns + "P_11VatZ")!.Value);
+        Assert.Equal("23", rows[0].Element(Ns + "P_12Z")!.Value);
+        Assert.Equal("Montaż", rows[1].Element(Ns + "P_7Z")!.Value);
+        Assert.Equal("80.00", rows[1].Element(Ns + "P_11VatZ")!.Value);
+    }
+
+    [Fact]
+    public void Generate_ThrowsWhenAdvanceMixesWithRowsOrCorrection()
+    {
+        var withRows = CreateAdvance();
+        withRows.Lines.Add(new KsefInvoiceLine { Name = "Wiersz", Quantity = 1, UnitNetPrice = 10m, VatRate = 23 });
+        Assert.Throws<ArgumentException>(() => CreateGenerator().Generate(withRows));
+
+        var withCorrection = CreateAdvance();
+        withCorrection.Correction = new KsefInvoiceCorrection
+        {
+            Reason = "Pomyłka",
+            CorrectedNumber = "ZAL/2026/08/000",
+            CorrectedIssueDate = new DateOnly(2026, 8, 1)
+        };
+        Assert.Throws<ArgumentException>(() => CreateGenerator().Generate(withCorrection));
+    }
+
+    [Fact]
+    public void Generate_ThrowsWhenAdvanceHasNoPaymentOrNoOrder()
+    {
+        var noPayment = CreateAdvance();
+        noPayment.Advance!.Payments.Clear();
+        Assert.Throws<ArgumentException>(() => CreateGenerator().Generate(noPayment));
+
+        var noOrder = CreateAdvance();
+        noOrder.Advance!.OrderLines.Clear();
+        Assert.Throws<ArgumentException>(() => CreateGenerator().Generate(noOrder));
+    }
 }

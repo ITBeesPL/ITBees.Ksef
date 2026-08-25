@@ -132,6 +132,79 @@ public class Fa3XsdValidationTests
         Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
     }
 
+    [Fact]
+    public void GeneratedInvoiceWithNotes_IsValidAgainstOfficialFa3Xsd()
+    {
+        var invoice = new KsefInvoice
+        {
+            Number = "FV/2026/08/003",
+            IssueDate = new DateOnly(2026, 8, 1),
+            Currency = "PLN",
+            Buyer = new KsefParty
+            {
+                Nip = "1111111111",
+                Name = "Nabywca S.A.",
+                AddressLine1 = "ul. Polna 2",
+                AddressLine2 = "11-111 Kraków"
+            },
+            Lines =
+            {
+                new KsefInvoiceLine { Name = "Abonament roczny", Quantity = 1, UnitNetPrice = 813.01m, VatRate = 23 }
+            },
+            Notes = "Zamówienie nr 44/2026 — płatność w dwóch ratach.\nTowar odebrano osobiście."
+        };
+
+        var errors = Validate(CreateGenerator().Generate(invoice));
+
+        Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
+    }
+
+    [Fact]
+    public void GeneratedAdvanceInvoice_IsValidAgainstOfficialFa3Xsd()
+    {
+        var invoice = new KsefInvoice
+        {
+            Number = "ZAL/2026/08/001",
+            IssueDate = new DateOnly(2026, 8, 20),
+            SaleDate = new DateOnly(2026, 8, 18),
+            Currency = "PLN",
+            Buyer = new KsefParty
+            {
+                Nip = "1111111111",
+                Name = "Nabywca S.A.",
+                AddressLine1 = "ul. Polna 2",
+                AddressLine2 = "11-111 Kraków"
+            },
+            Advance = new KsefAdvance
+            {
+                Payments =
+                {
+                    new KsefAdvancePayment { VatRate = 23, GrossAmount = 1230m },
+                    new KsefAdvancePayment { VatRate = 8, GrossAmount = 270m }
+                },
+                OrderGrossTotal = 2310m,
+                OrderLines =
+                {
+                    new KsefInvoiceLine
+                    {
+                        Name = "Sprzęt", Unit = "szt.", Quantity = 1, UnitNetPrice = 1000m, VatRate = 23
+                    },
+                    new KsefInvoiceLine
+                    {
+                        Name = "Montaż", Unit = "usł.", Quantity = 1, UnitNetPrice = 1000m, VatRate = 8
+                    }
+                }
+            },
+            IsPaid = true,
+            PaymentDate = new DateOnly(2026, 8, 18),
+            Notes = "Zaliczka na poczet zamówienia nr 44/2026."
+        };
+
+        var errors = Validate(CreateGenerator().Generate(invoice));
+
+        Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
+    }
+
     /// <summary>A correction down to zero: negative aggregates and rows carrying only the state before.</summary>
     [Fact]
     public void GeneratedFullReversal_IsValidAgainstOfficialFa3Xsd()

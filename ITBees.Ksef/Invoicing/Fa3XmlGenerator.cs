@@ -146,7 +146,7 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
             throw new ArgumentException("Invoice number (P_2) is required.", nameof(invoice));
         if (invoice.IssueDate == default)
             throw new ArgumentException("Invoice issue date (P_1) is required.", nameof(invoice));
-        if (invoice.Lines.Count == 0)
+        if (invoice.Lines.Count == 0 && invoice.Advance == null)
             throw new ArgumentException("Invoice must contain at least one line.", nameof(invoice));
         if (string.IsNullOrWhiteSpace(invoice.Buyer.Name))
             throw new ArgumentException("Buyer name is required.", nameof(invoice));
@@ -154,10 +154,16 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
             throw new ArgumentException(
                 "Notes exceed 3500 characters — the limit of StopkaFaktury (TTekstowy) in FA(3).", nameof(invoice));
 
-        var unsupportedRate = invoice.Lines.FirstOrDefault(l => l.VatRate is not (23 or 22 or 8 or 7 or 5 or 4 or 0));
+        var rates = invoice.Lines.Select(l => l.VatRate)
+            .Concat(invoice.Advance?.Payments.Select(p => p.VatRate) ?? Enumerable.Empty<int>())
+            .Concat(invoice.Advance?.OrderLines.Select(l => l.VatRate) ?? Enumerable.Empty<int>());
+        var unsupportedRate = rates.Where(r => r is not (23 or 22 or 8 or 7 or 5 or 4 or 0))
+            .Cast<int?>().FirstOrDefault();
         if (unsupportedRate != null)
             throw new NotSupportedException(
-                $"VAT rate {unsupportedRate.VatRate}% is not supported by this generator (supported: 23, 22, 8, 7, 5, 4, 0).");
+                $"VAT rate {unsupportedRate}% is not supported by this generator (supported: 23, 22, 8, 7, 5, 4, 0).");
+
+        ValidateAdvance(invoice);
 
         if (invoice.Correction == null)
         {
@@ -174,6 +180,60 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
         if (invoice.Correction.CorrectedIssueDate == default)
             throw new ArgumentException(
                 "Corrected invoice issue date (DataWystFaKorygowanej) is required.", nameof(invoice));
+    }
+
+    private static void ValidateAdvance(KsefInvoice invoice)
+    {
+        if (invoice.Advance == null)
+            return;
+
+        // A correction of an advance invoice is a distinct document kind (KOR_ZAL) with its own
+        // rules for the Zamowienie node — refuse rather than emit something the schema rejects.
+        if (invoice.Correction != null)
+            throw new ArgumentException(
+                "An advance invoice cannot be a correction (KOR_ZAL is not supported yet).", nameof(invoice));
+        if (invoice.Lines.Count > 0)
+            throw new ArgumentException(
+                "An advance invoice has no FaWiersz rows — put the order into Advance.OrderLines.",
+                nameof(invoice));
+        if (invoice.Advance.Payments.Count == 0)
+            throw new ArgumentException(
+                "An advance invoice requires at least one received payment (Advance.Payments).", nameof(invoice));
+        if (invoice.Advance.Payments.Any(p => p.GrossAmount <= 0))
+            throw new ArgumentException("Advance payment amounts must be positive.", nameof(invoice));
+        if (invoice.Advance.OrderLines.Count == 0)
+            throw new ArgumentException(
+                "An advance invoice requires the order data (Advance.OrderLines) — art. 106f ust. 1 pkt 4.",
+                nameof(invoice));
+        if (invoice.Advance.OrderGrossTotal <= 0)
+            throw new ArgumentException(
+                "Order gross total (WartoscZamowienia) must be positive.", nameof(invoice));
+    }
+
+    /// <summary>Order/contract node required on an advance invoice (art. 106f ust. 1 pkt 4).</summary>
+    private static XElement BuildZamowienie(XNamespace ns, KsefAdvance advance)
+    {
+        var element = new XElement(ns + "Zamowienie",
+            new XElement(ns + "WartoscZamowienia", FormatAmount(advance.OrderGrossTotal)));
+
+        var rowNumber = 0;
+        foreach (var line in advance.OrderLines)
+        {
+            rowNumber++;
+            var net = line.GetNetValue();
+            element.Add(new XElement(ns + "ZamowienieWiersz",
+                new XElement(ns + "NrWierszaZam", rowNumber),
+                new XElement(ns + "P_7Z", line.Name),
+                new XElement(ns + "P_8AZ", line.Unit),
+                new XElement(ns + "P_8BZ", FormatQuantity(line.Quantity)),
+                new XElement(ns + "P_9AZ", FormatAmount(line.UnitNetPrice)),
+                new XElement(ns + "P_11NettoZ", FormatAmount(net)),
+                new XElement(ns + "P_11VatZ",
+                    FormatAmount(Math.Round(net * line.VatRate / 100m, 2, MidpointRounding.AwayFromZero))),
+                new XElement(ns + "P_12Z", line.VatRate.ToString(CultureInfo.InvariantCulture))));
+        }
+
+        return element;
     }
 
     /// <summary>Emits PrzyczynaKorekty / TypKorekty / DaneFaKorygowanej, which follow RodzajFaktury in the schema.</summary>
@@ -216,22 +276,20 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
         };
     }
 
-    /// <summary>Maps per-rate net totals to FA(3) aggregate fields: 23/22% → P_13_1/P_14_1, 8/7% → P_13_2/P_14_2, 5/4% → P_13_3/P_14_3, 0% (domestic) → P_13_6_1.</summary>
-    private static void AppendVatAggregates(XElement fa, XNamespace ns, Dictionary<int, decimal> vatTotals)
+    /// <summary>Maps per-rate net and tax totals to FA(3) aggregate fields: 23/22% → P_13_1/P_14_1, 8/7% → P_13_2/P_14_2, 5/4% → P_13_3/P_14_3, 0% (domestic) → P_13_6_1.</summary>
+    private static void AppendVatAggregates(XElement fa, XNamespace ns,
+        Dictionary<int, (decimal Net, decimal Vat)> vatTotals)
     {
         void Append(int[] rates, string netField, string? vatField)
         {
-            var net = rates.Where(vatTotals.ContainsKey).Sum(r => vatTotals[r]);
-            if (net == 0m && !rates.Any(vatTotals.ContainsKey))
+            if (!rates.Any(vatTotals.ContainsKey))
                 return;
 
-            fa.Add(new XElement(ns + netField, FormatAmount(net)));
+            fa.Add(new XElement(ns + netField,
+                FormatAmount(rates.Where(vatTotals.ContainsKey).Sum(r => vatTotals[r].Net))));
             if (vatField != null)
-            {
-                var vat = rates.Where(vatTotals.ContainsKey)
-                    .Sum(r => Math.Round(vatTotals[r] * r / 100m, 2, MidpointRounding.AwayFromZero));
-                fa.Add(new XElement(ns + vatField, FormatAmount(vat)));
-            }
+                fa.Add(new XElement(ns + vatField,
+                    FormatAmount(rates.Where(vatTotals.ContainsKey).Sum(r => vatTotals[r].Vat))));
         }
 
         Append(new[] { 23, 22 }, "P_13_1", "P_14_1");
