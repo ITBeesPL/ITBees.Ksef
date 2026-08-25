@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <PackageId>ITBees.Ksef</PackageId>
-    <Version>8.0.12</Version>
+    <Version>8.0.14</Version>
     <Authors>ITBees</Authors>
     <Description>Client library for the Polish National e-Invoicing System KSeF API 2.0 (auth via KSeF token, online sessions, FA(3) invoice generation, UPO retrieval).</Description>
     <PackageTags>ksef;e-invoicing;fa3;faktura;vat;poland</PackageTags>

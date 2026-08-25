@@ -81,22 +81,28 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
                 new XElement(ns + "DataZaplaty", FormatDate(invoice.PaymentDate ?? invoice.IssueDate))));
         }
 
-        var document = new XDocument(
-            new XDeclaration("1.0", "utf-8", null),
-            new XElement(ns + "Faktura",
-                new XAttribute(XNamespace.Xmlns + "xsi", "http://www.w3.org/2001/XMLSchema-instance"),
-                new XElement(ns + "Naglowek",
-                    new XElement(ns + "KodFormularza",
-                        new XAttribute("kodSystemowy", "FA (3)"),
-                        new XAttribute("wersjaSchemy", "1-0E"),
-                        "FA"),
-                    new XElement(ns + "WariantFormularza", 3),
-                    new XElement(ns + "DataWytworzeniaFa",
-                        generatedAtUtc.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)),
-                    new XElement(ns + "SystemInfo", _options.SystemInfo)),
-                BuildParty(ns, "Podmiot1", seller),
-                BuildParty(ns, "Podmiot2", invoice.Buyer),
-                fa));
+        var faktura = new XElement(ns + "Faktura",
+            new XAttribute(XNamespace.Xmlns + "xsi", "http://www.w3.org/2001/XMLSchema-instance"),
+            new XElement(ns + "Naglowek",
+                new XElement(ns + "KodFormularza",
+                    new XAttribute("kodSystemowy", "FA (3)"),
+                    new XAttribute("wersjaSchemy", "1-0E"),
+                    "FA"),
+                new XElement(ns + "WariantFormularza", 3),
+                new XElement(ns + "DataWytworzeniaFa",
+                    generatedAtUtc.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)),
+                new XElement(ns + "SystemInfo", _options.SystemInfo)),
+            BuildParty(ns, "Podmiot1", seller),
+            BuildParty(ns, "Podmiot2", invoice.Buyer),
+            fa);
+
+        // StopkaFaktury is TTekstowy (min 1 char), so blank notes must emit no Stopka at all.
+        if (!string.IsNullOrWhiteSpace(invoice.Notes))
+            faktura.Add(new XElement(ns + "Stopka",
+                new XElement(ns + "Informacje",
+                    new XElement(ns + "StopkaFaktury", invoice.Notes))));
+
+        var document = new XDocument(new XDeclaration("1.0", "utf-8", null), faktura);
 
         var builder = new StringBuilder();
         using (var writer = new Utf8StringWriter(builder))
@@ -117,6 +123,9 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
             throw new ArgumentException("Invoice must contain at least one line.", nameof(invoice));
         if (string.IsNullOrWhiteSpace(invoice.Buyer.Name))
             throw new ArgumentException("Buyer name is required.", nameof(invoice));
+        if (invoice.Notes is { Length: > 3500 })
+            throw new ArgumentException(
+                "Notes exceed 3500 characters — the limit of StopkaFaktury (TTekstowy) in FA(3).", nameof(invoice));
 
         var unsupportedRate = invoice.Lines.FirstOrDefault(l => l.VatRate is not (23 or 22 or 8 or 7 or 5 or 4 or 0));
         if (unsupportedRate != null)

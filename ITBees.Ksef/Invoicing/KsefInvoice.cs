@@ -32,11 +32,55 @@ public class KsefInvoice
     /// </summary>
     public KsefInvoiceCorrection? Correction { get; set; }
 
+    /// <summary>
+    /// Advance-invoice data (art. 106f of the Polish VAT act). When set, the document is rendered
+    /// as an advance invoice (RodzajFaktury = ZAL): the aggregates and P_15 come from the received
+    /// payment split per VAT rate (KP = ZB × SP / (100 + SP)), <see cref="Lines"/> must stay empty,
+    /// and the order/contract goes into the Zamowienie node. <see cref="SaleDate"/> then carries
+    /// the date the payment was received (P_6). Mutually exclusive with <see cref="Correction"/>.
+    /// </summary>
+    public KsefAdvance? Advance { get; set; }
+
     /// <summary>True when the invoice was already paid (e.g. Stripe checkout) — emits Platnosc/Zaplacono.</summary>
     public bool IsPaid { get; set; }
 
     /// <summary>Payment date, required when <see cref="IsPaid"/> is true.</summary>
     public DateOnly? PaymentDate { get; set; }
+
+    /// <summary>
+    /// Free-text remarks of the seller, emitted as <c>Stopka/Informacje/StopkaFaktury</c> —
+    /// the schema's free-form text field (max 3500 characters, newlines allowed).
+    /// Null or whitespace emits no Stopka element at all.
+    /// </summary>
+    public string? Notes { get; set; }
+}
+
+/// <summary>Advance-invoice data (RodzajFaktury = ZAL): the received payment and the order it prepays.</summary>
+public class KsefAdvance
+{
+    /// <summary>
+    /// Received gross payment allocated per VAT rate. Drives the P_13_x/P_14_x aggregates and P_15;
+    /// per rate the tax is KP = ZB × SP / (100 + SP) as required by art. 106f ust. 1 pkt 3.
+    /// </summary>
+    public List<KsefAdvancePayment> Payments { get; set; } = new();
+
+    /// <summary>Total order/contract value including VAT (Zamowienie/WartoscZamowienia).</summary>
+    public decimal OrderGrossTotal { get; set; }
+
+    /// <summary>
+    /// Order/contract rows (Zamowienie/ZamowienieWiersz) — the goods/services, quantities, net
+    /// values and VAT rates of the whole order, required by art. 106f ust. 1 pkt 4.
+    /// </summary>
+    public List<KsefInvoiceLine> OrderLines { get; set; } = new();
+}
+
+/// <summary>Part of the received advance payment attributable to one VAT rate.</summary>
+public class KsefAdvancePayment
+{
+    public int VatRate { get; set; } = 23;
+
+    /// <summary>Gross amount received for this rate (ZB in the KP = ZB × SP / (100 + SP) formula).</summary>
+    public decimal GrossAmount { get; set; }
 }
 
 /// <summary>When the correction takes effect in the VAT ledger (TypKorekty).</summary>
