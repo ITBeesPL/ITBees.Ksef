@@ -33,12 +33,34 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
 
         // On a correction the aggregates carry the difference rather than the document value:
         // "before" rows are subtracted, "after" rows added. A plain invoice has nothing to subtract.
-        var vatTotals = invoice.Lines
-            .GroupBy(l => l.VatRate)
-            .ToDictionary(g => g.Key, g => g.Sum(l => l.StateBeforeCorrection ? -l.GetNetValue() : l.GetNetValue()));
+        // On an advance invoice they come from the received payment instead of the rows: per rate
+        // the tax is KP = ZB × SP / (100 + SP) computed from the gross amount (art. 106f) — deriving
+        // it from the net again could drift by a grosz, so net is what remains after the tax.
+        Dictionary<int, (decimal Net, decimal Vat)> vatTotals;
+        if (invoice.Advance != null)
+        {
+            vatTotals = invoice.Advance.Payments
+                .GroupBy(p => p.VatRate)
+                .ToDictionary(g => g.Key, g =>
+                {
+                    var gross = g.Sum(p => p.GrossAmount);
+                    var vat = Math.Round(gross * g.Key / (100m + g.Key), 2, MidpointRounding.AwayFromZero);
+                    return (gross - vat, vat);
+                });
+        }
+        else
+        {
+            vatTotals = invoice.Lines
+                .GroupBy(l => l.VatRate)
+                .ToDictionary(g => g.Key, g =>
+                {
+                    var net = g.Sum(l => l.StateBeforeCorrection ? -l.GetNetValue() : l.GetNetValue());
+                    return (net, Math.Round(net * g.Key / 100m, 2, MidpointRounding.AwayFromZero));
+                });
+        }
 
-        var totalNet = vatTotals.Values.Sum();
-        var totalVat = vatTotals.Sum(kv => Math.Round(kv.Value * kv.Key / 100m, 2, MidpointRounding.AwayFromZero));
+        var totalNet = vatTotals.Values.Sum(x => x.Net);
+        var totalVat = vatTotals.Values.Sum(x => x.Vat);
         var totalGross = totalNet + totalVat;
 
         var fa = new XElement(ns + "Fa",
@@ -50,7 +72,8 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
         AppendVatAggregates(fa, ns, vatTotals);
         fa.Add(new XElement(ns + "P_15", FormatAmount(totalGross)));
         fa.Add(BuildAdnotacje(ns));
-        fa.Add(new XElement(ns + "RodzajFaktury", invoice.Correction == null ? "VAT" : "KOR"));
+        fa.Add(new XElement(ns + "RodzajFaktury",
+            invoice.Correction != null ? "KOR" : invoice.Advance != null ? "ZAL" : "VAT"));
         if (invoice.Correction != null)
             AppendCorrectionData(fa, ns, invoice.Correction);
 
@@ -80,6 +103,10 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
                 new XElement(ns + "Zaplacono", "1"),
                 new XElement(ns + "DataZaplaty", FormatDate(invoice.PaymentDate ?? invoice.IssueDate))));
         }
+
+        // Zamowienie closes the Fa sequence in the schema, so it goes after the payment block.
+        if (invoice.Advance != null)
+            fa.Add(BuildZamowienie(ns, invoice.Advance));
 
         var faktura = new XElement(ns + "Faktura",
             new XAttribute(XNamespace.Xmlns + "xsi", "http://www.w3.org/2001/XMLSchema-instance"),
