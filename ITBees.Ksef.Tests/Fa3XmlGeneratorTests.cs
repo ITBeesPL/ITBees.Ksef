@@ -127,6 +127,64 @@ public class Fa3XmlGeneratorTests
     }
 
     [Fact]
+    public void Generate_EmitsDueDateAndBankAccountForUnpaidInvoice()
+    {
+        var invoice = CreateInvoice();
+        invoice.IsPaid = false;
+        invoice.PaymentDate = null;
+        invoice.PaymentDueDate = new DateOnly(2026, 9, 1);
+        invoice.BankAccount = new KsefBankAccount
+        {
+            Number = "44 1140 2004 0000 3402 8563 8379",
+            Description = "Rachunek firmowy"
+        };
+
+        var platnosc = XDocument.Parse(CreateGenerator().Generate(invoice))
+            .Root!.Element(Ns + "Fa")!.Element(Ns + "Platnosc")!;
+
+        Assert.Null(platnosc.Element(Ns + "Zaplacono"));
+        Assert.Equal("2026-09-01", platnosc.Element(Ns + "TerminPlatnosci")!.Element(Ns + "Termin")!.Value);
+        var account = platnosc.Element(Ns + "RachunekBankowy")!;
+        Assert.Equal("44114020040000340285638379", account.Element(Ns + "NrRB")!.Value);
+        Assert.Equal("Rachunek firmowy", account.Element(Ns + "OpisRachunku")!.Value);
+    }
+
+    [Fact]
+    public void Generate_OmitsPaymentSectionWhenThereIsNothingToSay()
+    {
+        var invoice = CreateInvoice();
+        invoice.IsPaid = false;
+        invoice.PaymentDate = null;
+
+        var fa = XDocument.Parse(CreateGenerator().Generate(invoice)).Root!.Element(Ns + "Fa")!;
+
+        Assert.Null(fa.Element(Ns + "Platnosc"));
+    }
+
+    [Fact]
+    public void Generate_EmitsDueDateAfterPaidMarkerOnPaidInvoice()
+    {
+        var invoice = CreateInvoice();
+        invoice.PaymentDueDate = new DateOnly(2026, 9, 1);
+
+        var platnosc = XDocument.Parse(CreateGenerator().Generate(invoice))
+            .Root!.Element(Ns + "Fa")!.Element(Ns + "Platnosc")!;
+
+        // Schema order inside Platnosc: Zaplacono/DataZaplaty first, TerminPlatnosci after.
+        Assert.Equal(new[] { "Zaplacono", "DataZaplaty", "TerminPlatnosci" },
+            platnosc.Elements().Select(x => x.Name.LocalName).ToArray());
+    }
+
+    [Fact]
+    public void Generate_ThrowsForBankAccountNumberOutsideSchemaLength()
+    {
+        var invoice = CreateInvoice();
+        invoice.BankAccount = new KsefBankAccount { Number = "123 456" };
+
+        Assert.Throws<ArgumentException>(() => CreateGenerator().Generate(invoice));
+    }
+
+    [Fact]
     public void Generate_ThrowsForUnsupportedVatRate()
     {
         var invoice = CreateInvoice();

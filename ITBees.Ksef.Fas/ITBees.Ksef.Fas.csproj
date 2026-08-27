@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <PackageId>ITBees.Ksef.Fas</PackageId>
-    <Version>8.0.14</Version>
+    <Version>8.0.16</Version>
     <Authors>ITBees</Authors>
     <Description>KSeF e-invoicing bridge for the ITBees.FAS payment stack: outbox entity with invoice numbering, EF model registration and a background worker that issues a FA(3) KSeF invoice for every successfully paid PaymentSession.</Description>
     <PackageTags>ksef;e-invoicing;fas;stripe;faktura;poland</PackageTags>

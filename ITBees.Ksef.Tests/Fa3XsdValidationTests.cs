@@ -89,6 +89,68 @@ public class Fa3XsdValidationTests
     }
 
     [Fact]
+    public void GeneratedUnpaidInvoiceWithDueDateAndBankAccount_IsValidAgainstOfficialFa3Xsd()
+    {
+        var invoice = new KsefInvoice
+        {
+            Number = "FV/2026/08/005",
+            IssueDate = new DateOnly(2026, 8, 25),
+            Currency = "PLN",
+            Buyer = new KsefParty
+            {
+                Nip = "1111111111",
+                Name = "Nabywca S.A.",
+                AddressLine1 = "ul. Polna 2",
+                AddressLine2 = "11-111 Kraków"
+            },
+            Lines =
+            {
+                new KsefInvoiceLine { Name = "Przegląd okresowy", Quantity = 1, UnitNetPrice = 10010m, VatRate = 23 }
+            },
+            PaymentDueDate = new DateOnly(2026, 9, 1),
+            BankAccount = new KsefBankAccount
+            {
+                Number = "44114020040000340285638379",
+                Description = "Rachunek firmowy"
+            }
+        };
+
+        var errors = Validate(CreateGenerator().Generate(invoice));
+
+        Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
+    }
+
+    [Fact]
+    public void GeneratedPaidInvoiceWithDueDateAndBankAccount_IsValidAgainstOfficialFa3Xsd()
+    {
+        var invoice = new KsefInvoice
+        {
+            Number = "FV/2026/08/006",
+            IssueDate = new DateOnly(2026, 8, 25),
+            Currency = "PLN",
+            Buyer = new KsefParty
+            {
+                Nip = "1111111111",
+                Name = "Nabywca S.A.",
+                AddressLine1 = "ul. Polna 2",
+                AddressLine2 = "11-111 Kraków"
+            },
+            Lines =
+            {
+                new KsefInvoiceLine { Name = "Usługa serwisowa", Quantity = 1, UnitNetPrice = 500m, VatRate = 23 }
+            },
+            IsPaid = true,
+            PaymentDate = new DateOnly(2026, 8, 26),
+            PaymentDueDate = new DateOnly(2026, 9, 1),
+            BankAccount = new KsefBankAccount { Number = "44114020040000340285638379" }
+        };
+
+        var errors = Validate(CreateGenerator().Generate(invoice));
+
+        Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
+    }
+
+    [Fact]
     public void GeneratedConsumerInvoice_IsValidAgainstOfficialFa3Xsd()
     {
         var invoice = new KsefInvoice
