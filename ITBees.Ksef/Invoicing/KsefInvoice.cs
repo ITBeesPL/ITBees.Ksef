@@ -48,6 +48,16 @@ public class KsefInvoice
     public DateOnly? PaymentDate { get; set; }
 
     /// <summary>
+    /// Payment due date — emits <c>Platnosc/TerminPlatnosci/Termin</c>. Independent of
+    /// <see cref="IsPaid"/>: the schema allows both on one document, though senders typically
+    /// omit the due date once the invoice is paid.
+    /// </summary>
+    public DateOnly? PaymentDueDate { get; set; }
+
+    /// <summary>Seller's bank account for the payment — emits <c>Platnosc/RachunekBankowy</c>.</summary>
+    public KsefBankAccount? BankAccount { get; set; }
+
+    /// <summary>
     /// Free-text remarks of the seller, emitted as <c>Stopka/Informacje/StopkaFaktury</c> —
     /// the schema's free-form text field (max 3500 characters, newlines allowed).
     /// Null or whitespace emits no Stopka element at all.
@@ -117,6 +127,19 @@ public class KsefInvoiceCorrection
     /// generator reports as NrKSeFN instead of NrKSeFFaKorygowanej.
     /// </summary>
     public string? CorrectedKsefNumber { get; set; }
+}
+
+/// <summary>Bank account the buyer should pay to (FA(3): Platnosc/RachunekBankowy).</summary>
+public class KsefBankAccount
+{
+    /// <summary>
+    /// Full account number (NrRB) — 10 to 34 characters after the generator strips whitespace
+    /// and dashes, typically a 26-digit Polish NRB or an IBAN.
+    /// </summary>
+    public string Number { get; set; } = string.Empty;
+
+    /// <summary>Optional account label shown to the buyer (OpisRachunku), e.g. "Rachunek firmowy".</summary>
+    public string? Description { get; set; }
 }
 
 public class KsefParty

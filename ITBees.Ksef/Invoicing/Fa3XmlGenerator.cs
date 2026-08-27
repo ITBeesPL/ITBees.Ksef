@@ -97,12 +97,9 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
             fa.Add(row);
         }
 
-        if (invoice.IsPaid)
-        {
-            fa.Add(new XElement(ns + "Platnosc",
-                new XElement(ns + "Zaplacono", "1"),
-                new XElement(ns + "DataZaplaty", FormatDate(invoice.PaymentDate ?? invoice.IssueDate))));
-        }
+        var payment = BuildPlatnosc(ns, invoice);
+        if (payment != null)
+            fa.Add(payment);
 
         // Zamowienie closes the Fa sequence in the schema, so it goes after the payment block.
         if (invoice.Advance != null)
@@ -153,6 +150,13 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
         if (invoice.Notes is { Length: > 3500 })
             throw new ArgumentException(
                 "Notes exceed 3500 characters — the limit of StopkaFaktury (TTekstowy) in FA(3).", nameof(invoice));
+
+        // TNrRB constrains the account number to 10–34 characters; whitespace and dashes are
+        // stripped before the check because the generator strips them on output too.
+        if (invoice.BankAccount != null
+            && NormalizeAccountNumber(invoice.BankAccount.Number).Length is < 10 or > 34)
+            throw new ArgumentException(
+                "Bank account number (NrRB) must be 10–34 characters long.", nameof(invoice));
 
         var rates = invoice.Lines.Select(l => l.VatRate)
             .Concat(invoice.Advance?.Payments.Select(p => p.VatRate) ?? Enumerable.Empty<int>())
@@ -209,6 +213,40 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
             throw new ArgumentException(
                 "Order gross total (WartoscZamowienia) must be positive.", nameof(invoice));
     }
+
+    /// <summary>
+    /// Payment terms node. Schema order within Platnosc: Zaplacono/DataZaplaty, then
+    /// TerminPlatnosci, then RachunekBankowy. Returns null when there is nothing to say —
+    /// an empty Platnosc element is pointless, though the schema would accept it.
+    /// </summary>
+    private static XElement? BuildPlatnosc(XNamespace ns, KsefInvoice invoice)
+    {
+        var element = new XElement(ns + "Platnosc");
+
+        if (invoice.IsPaid)
+        {
+            element.Add(new XElement(ns + "Zaplacono", "1"));
+            element.Add(new XElement(ns + "DataZaplaty", FormatDate(invoice.PaymentDate ?? invoice.IssueDate)));
+        }
+
+        if (invoice.PaymentDueDate != null)
+            element.Add(new XElement(ns + "TerminPlatnosci",
+                new XElement(ns + "Termin", FormatDate(invoice.PaymentDueDate.Value))));
+
+        if (invoice.BankAccount != null)
+        {
+            var account = new XElement(ns + "RachunekBankowy",
+                new XElement(ns + "NrRB", NormalizeAccountNumber(invoice.BankAccount.Number)));
+            if (!string.IsNullOrWhiteSpace(invoice.BankAccount.Description))
+                account.Add(new XElement(ns + "OpisRachunku", invoice.BankAccount.Description));
+            element.Add(account);
+        }
+
+        return element.HasElements ? element : null;
+    }
+
+    private static string NormalizeAccountNumber(string number) =>
+        new(number.Where(x => !char.IsWhiteSpace(x) && x != '-').ToArray());
 
     /// <summary>Order/contract node required on an advance invoice (art. 106f ust. 1 pkt 4).</summary>
     private static XElement BuildZamowienie(XNamespace ns, KsefAdvance advance)
