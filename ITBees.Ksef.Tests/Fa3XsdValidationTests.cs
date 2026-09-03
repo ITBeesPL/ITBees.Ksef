@@ -316,6 +316,112 @@ public class Fa3XsdValidationTests
         }
     };
 
+    [Fact]
+    public void GeneratedInvoiceForNonEuBuyer_NotSubjectToVat_IsValidAgainstOfficialFa3Xsd()
+    {
+        // The document KSeF rejected on 2026-09-03 with "P_12 = '0' … Enumeration constraint failed".
+        var invoice = new KsefInvoice
+        {
+            Number = "FV/2026/09/0002",
+            IssueDate = new DateOnly(2026, 9, 1),
+            SaleDate = new DateOnly(2026, 8, 31),
+            Currency = "PLN",
+            Buyer = new KsefParty
+            {
+                Name = "Wireless Logic Limited",
+                ForeignTaxId = "2090006259",
+                CountryCode = "GB",
+                AddressLine1 = "Horizon, Hurley",
+                AddressLine2 = "SL6 6RJ Berkshire"
+            },
+            Lines =
+            {
+                new KsefInvoiceLine
+                {
+                    Name = "Development services in accordance with the agreement", Quantity = 1,
+                    UnitNetPrice = 22916.66m, VatRate = 0, VatRateKind = KsefVatRateKind.NotSubjectNonEu
+                }
+            },
+            PaymentDueDate = new DateOnly(2026, 9, 8),
+            BankAccount = new KsefBankAccount { Number = "06114020040000340285638379", Description = "Rachunek firmowy" }
+        };
+
+        var errors = Validate(CreateGenerator().Generate(invoice));
+
+        Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
+    }
+
+    [Fact]
+    public void GeneratedInvoiceWithEveryUntaxedKind_IsValidAgainstOfficialFa3Xsd()
+    {
+        var invoice = new KsefInvoice
+        {
+            Number = "FV/2026/09/0003",
+            IssueDate = new DateOnly(2026, 9, 1),
+            Currency = "PLN",
+            Buyer = new KsefParty
+            {
+                Name = "Beispiel GmbH",
+                EuVatNumber = "123456789",
+                CountryCode = "DE",
+                AddressLine1 = "Musterstraße 1",
+                AddressLine2 = "10115 Berlin"
+            },
+            Lines =
+            {
+                new KsefInvoiceLine { Name = "Krajowa 23%", Quantity = 1, UnitNetPrice = 100m, VatRate = 23 },
+                new KsefInvoiceLine { Name = "Krajowa 0%", Quantity = 1, UnitNetPrice = 100m, VatRate = 0 },
+                new KsefInvoiceLine { Name = "WDT", Quantity = 1, UnitNetPrice = 100m, VatRate = 0, VatRateKind = KsefVatRateKind.ZeroIntraCommunity },
+                new KsefInvoiceLine { Name = "Eksport", Quantity = 1, UnitNetPrice = 100m, VatRate = 0, VatRateKind = KsefVatRateKind.ZeroExport },
+                new KsefInvoiceLine { Name = "Zwolniona", Quantity = 1, UnitNetPrice = 100m, VatRate = 0, VatRateKind = KsefVatRateKind.Exempt },
+                new KsefInvoiceLine { Name = "Odwrotne obciążenie", Quantity = 1, UnitNetPrice = 100m, VatRate = 0, VatRateKind = KsefVatRateKind.ReverseCharge },
+                new KsefInvoiceLine { Name = "np I", Quantity = 1, UnitNetPrice = 100m, VatRate = 0, VatRateKind = KsefVatRateKind.NotSubjectNonEu },
+                new KsefInvoiceLine { Name = "np II", Quantity = 1, UnitNetPrice = 100m, VatRate = 0, VatRateKind = KsefVatRateKind.NotSubjectEu }
+            },
+            ExemptionBasis = "art. 43 ust. 1 pkt 19 ustawy o VAT"
+        };
+
+        var errors = Validate(CreateGenerator().Generate(invoice));
+
+        Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
+    }
+
+    [Fact]
+    public void GeneratedAdvanceInvoiceWithUntaxedKind_IsValidAgainstOfficialFa3Xsd()
+    {
+        var invoice = new KsefInvoice
+        {
+            Number = "FZ/2026/09/0001",
+            IssueDate = new DateOnly(2026, 9, 1),
+            Currency = "PLN",
+            Buyer = new KsefParty
+            {
+                Name = "Wireless Logic Limited", ForeignTaxId = "2090006259", CountryCode = "GB",
+                AddressLine1 = "Horizon, Hurley", AddressLine2 = "SL6 6RJ Berkshire"
+            },
+            Advance = new KsefAdvance
+            {
+                Payments =
+                {
+                    new KsefAdvancePayment { VatRate = 0, VatRateKind = KsefVatRateKind.NotSubjectNonEu, GrossAmount = 1000m }
+                },
+                OrderGrossTotal = 5000m,
+                OrderLines =
+                {
+                    new KsefInvoiceLine
+                    {
+                        Name = "Wdrożenie", Quantity = 1, UnitNetPrice = 5000m, VatRate = 0,
+                        VatRateKind = KsefVatRateKind.NotSubjectNonEu
+                    }
+                }
+            }
+        };
+
+        var errors = Validate(CreateGenerator().Generate(invoice));
+
+        Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
+    }
+
     /// <summary>Redirects the http schemaLocation of StrukturyDanych/ElementarneTypyDanych/KodyKrajow to local files.</summary>
     private sealed class LocalSchemaResolver : XmlUrlResolver
     {

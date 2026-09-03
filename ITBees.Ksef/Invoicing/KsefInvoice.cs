@@ -63,6 +63,13 @@ public class KsefInvoice
     /// Null or whitespace emits no Stopka element at all.
     /// </summary>
     public string? Notes { get; set; }
+
+    /// <summary>
+    /// Legal basis of the VAT exemption (Adnotacje/Zwolnienie/P_19A), e.g. "art. 43 ust. 1 pkt 19
+    /// ustawy o VAT". Required when any line (or advance payment) uses
+    /// <see cref="KsefVatRateKind.Exempt"/>; ignored otherwise. Max 240 characters (TZnakowy).
+    /// </summary>
+    public string? ExemptionBasis { get; set; }
 }
 
 /// <summary>Advance-invoice data (RodzajFaktury = ZAL): the received payment and the order it prepays.</summary>
@@ -88,6 +95,9 @@ public class KsefAdvance
 public class KsefAdvancePayment
 {
     public int VatRate { get; set; } = 23;
+
+    /// <summary>Meaning of <see cref="VatRate"/> — see <see cref="KsefInvoiceLine.VatRateKind"/>.</summary>
+    public KsefVatRateKind VatRateKind { get; set; } = KsefVatRateKind.Standard;
 
     /// <summary>Gross amount received for this rate (ZB in the KP = ZB × SP / (100 + SP) formula).</summary>
     public decimal GrossAmount { get; set; }
@@ -142,10 +152,39 @@ public class KsefBankAccount
     public string? Description { get; set; }
 }
 
+/// <summary>
+/// A party of the invoice. The buyer is identified by exactly one of: <see cref="Nip"/> (Polish
+/// taxpayer), <see cref="EuVatNumber"/> (EU business, KodUE + NrVatUE), <see cref="ForeignTaxId"/>
+/// (any other tax identifier, KodKraju + NrID) — checked in that order — or none of them
+/// (consumer, BrakID). The seller must always have a NIP.
+/// </summary>
 public class KsefParty
 {
     /// <summary>Polish NIP (10 digits). Leave null for consumers (B2C) — the generator emits BrakID.</summary>
     public string? Nip { get; set; }
+
+    /// <summary>
+    /// EU VAT number without the country prefix (NrVatUE, up to 12 characters: digits, capital
+    /// letters, '+' and '*'). Used when <see cref="Nip"/> is empty; the prefix goes to
+    /// <see cref="EuVatCountryCode"/>.
+    /// </summary>
+    public string? EuVatNumber { get; set; }
+
+    /// <summary>
+    /// VAT prefix of the EU member state (KodUE), e.g. "DE"; Greece is "EL" and Northern Ireland
+    /// "XI" as in the VIES register. Defaults to <see cref="CountryCode"/> when empty.
+    /// </summary>
+    public string? EuVatCountryCode { get; set; }
+
+    /// <summary>
+    /// Tax identifier issued outside the EU (NrID, up to 50 characters), used when neither
+    /// <see cref="Nip"/> nor <see cref="EuVatNumber"/> is set. The issuing country goes to
+    /// <see cref="ForeignTaxIdCountryCode"/>.
+    /// </summary>
+    public string? ForeignTaxId { get; set; }
+
+    /// <summary>ISO 3166-1 alpha-2 code of the country that issued <see cref="ForeignTaxId"/> (KodKraju). Defaults to <see cref="CountryCode"/> when empty.</summary>
+    public string? ForeignTaxIdCountryCode { get; set; }
 
     public string Name { get; set; } = string.Empty;
 
@@ -179,8 +218,18 @@ public class KsefInvoiceLine
     /// <summary>Net line value (P_11). When null, computed as Quantity × UnitNetPrice rounded to 2 decimals.</summary>
     public decimal? NetValue { get; set; }
 
-    /// <summary>VAT rate in percent: 23, 8, 5 or 0.</summary>
+    /// <summary>
+    /// VAT rate in percent (23, 22, 8, 7, 5, 4 or 0) when <see cref="VatRateKind"/> is
+    /// <see cref="KsefVatRateKind.Standard"/>; must be 0 for every other kind.
+    /// </summary>
     public int VatRate { get; set; } = 23;
+
+    /// <summary>
+    /// What the rate means — a plain percentage, or one of the untaxed cases FA(3) keeps apart
+    /// (WDT, export, exempt, reverse charge, not subject to Polish VAT). Drives P_12 and the
+    /// aggregate field the line is summed into.
+    /// </summary>
+    public KsefVatRateKind VatRateKind { get; set; } = KsefVatRateKind.Standard;
 
     /// <summary>
     /// Marks the row as the state <em>before</em> the correction (StanPrzed). On a correcting invoice

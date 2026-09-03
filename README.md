@@ -69,6 +69,32 @@ var result = await ksefInvoiceService.SendInvoiceAsync(new KsefInvoice
 // result.UpoXml    — UPO (XML), jeżeli było już dostępne
 ```
 
+### Stawki VAT inne niż procent (od 8.0.17)
+
+FA(3) nie zna w `P_12` gołego `0` — schemat rozróżnia krajowe 0%, WDT, eksport, zwolnienie,
+odwrotne obciążenie i „nie podlega”, a każdy z tych przypadków ma własne pole sum w `Fa`.
+Dlatego pozycja (`KsefInvoiceLine`) i część zaliczki (`KsefAdvancePayment`) mają obok `VatRate`
+pole `VatRateKind`:
+
+| `VatRateKind` | `VatRate` | `P_12` | Suma w `Fa` | Dodatkowo |
+|---|---|---|---|---|
+| `Standard` | 23, 22, 8, 7, 5, 4 | `23` … | `P_13_1`–`P_13_3` + `P_14_x` | |
+| `Standard` | 0 | `0 KR` | `P_13_6_1` | |
+| `ZeroIntraCommunity` | 0 | `0 WDT` | `P_13_6_2` | |
+| `ZeroExport` | 0 | `0 EX` | `P_13_6_3` | |
+| `Exempt` | 0 | `zw` | `P_13_7` | wymaga `KsefInvoice.ExemptionBasis` → `P_19A` |
+| `ReverseCharge` | 0 | `oo` | `P_13_10` | `Adnotacje/P_18 = 1` |
+| `NotSubjectNonEu` | 0 | `np I` | `P_13_8` | usługi/dostawy poza krajem (nabywca spoza UE) |
+| `NotSubjectEu` | 0 | `np II` | `P_13_9` | usługi z art. 100 ust. 1 pkt 4 (nabywca z UE) |
+
+Rodzaj inny niż `Standard` z `VatRate ≠ 0` generator odrzuca — to prawie na pewno błąd mapowania.
+`KsefVatRates.Parse("np I")` czyta `P_12` z cudzych dokumentów z powrotem na parę (stawka, rodzaj).
+
+Nabywca spoza Polski: zamiast `Nip` podaj `EuVatNumber` (+ `EuVatCountryCode`, domyślnie
+`CountryCode`; generator wystawi `KodUE` + `NrVatUE`) albo `ForeignTaxId`
+(+ `ForeignTaxIdCountryCode`; `KodKraju` + `NrID`). Lista prefiksów UE to `KsefEuVatCountries`
+(uwaga: Grecja to `EL`, Irlandia Północna `XI`, Wielka Brytania nie jest w UE).
+
 Warstwy niższego poziomu (`IKsefApiClient`, `IKsefAuthenticationService`, `IFa3XmlGenerator`, `KsefCryptography`, `KsefXadesSigner`) są publiczne — można ich użyć bezpośrednio, np. do własnej orkiestracji wsadowej.
 
 ## Logowanie certyfikatem zamiast tokenem

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 using ITBees.Ksef.Configuration;
 using Microsoft.Extensions.Options;
@@ -13,6 +14,8 @@ namespace ITBees.Ksef.Invoicing;
 public class Fa3XmlGenerator : IFa3XmlGenerator
 {
     public static readonly XNamespace Fa3Namespace = "http://crd.gov.pl/wzor/2025/06/25/13775/";
+
+    private static readonly Regex EuVatNumberPattern = new(@"^(\d|[A-Z]|\+|\*){1,12}$", RegexOptions.Compiled);
 
     private readonly KsefOptions _options;
 
@@ -36,26 +39,33 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
         // On an advance invoice they come from the received payment instead of the rows: per rate
         // the tax is KP = ZB × SP / (100 + SP) computed from the gross amount (art. 106f) — deriving
         // it from the net again could drift by a grosz, so net is what remains after the tax.
-        Dictionary<int, (decimal Net, decimal Vat)> vatTotals;
+        // The key is the (rate, kind) pair: two 0% lines can land in different aggregate fields
+        // (domestic 0%, WDT, export, exempt…), so the percentage alone would merge them.
+        Dictionary<(int Rate, KsefVatRateKind Kind), (decimal Net, decimal Vat)> vatTotals;
         if (invoice.Advance != null)
         {
             vatTotals = invoice.Advance.Payments
-                .GroupBy(p => p.VatRate)
+                .GroupBy(p => (p.VatRate, p.VatRateKind))
                 .ToDictionary(g => g.Key, g =>
                 {
                     var gross = g.Sum(p => p.GrossAmount);
-                    var vat = Math.Round(gross * g.Key / (100m + g.Key), 2, MidpointRounding.AwayFromZero);
+                    var vat = KsefVatRates.IsTaxed(g.Key.VatRateKind)
+                        ? Math.Round(gross * g.Key.VatRate / (100m + g.Key.VatRate), 2, MidpointRounding.AwayFromZero)
+                        : 0m;
                     return (gross - vat, vat);
                 });
         }
         else
         {
             vatTotals = invoice.Lines
-                .GroupBy(l => l.VatRate)
+                .GroupBy(l => (l.VatRate, l.VatRateKind))
                 .ToDictionary(g => g.Key, g =>
                 {
                     var net = g.Sum(l => l.StateBeforeCorrection ? -l.GetNetValue() : l.GetNetValue());
-                    return (net, Math.Round(net * g.Key / 100m, 2, MidpointRounding.AwayFromZero));
+                    var vat = KsefVatRates.IsTaxed(g.Key.VatRateKind)
+                        ? Math.Round(net * g.Key.VatRate / 100m, 2, MidpointRounding.AwayFromZero)
+                        : 0m;
+                    return (net, vat);
                 });
         }
 
@@ -71,7 +81,7 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
 
         AppendVatAggregates(fa, ns, vatTotals);
         fa.Add(new XElement(ns + "P_15", FormatAmount(totalGross)));
-        fa.Add(BuildAdnotacje(ns));
+        fa.Add(BuildAdnotacje(ns, invoice));
         fa.Add(new XElement(ns + "RodzajFaktury",
             invoice.Correction != null ? "KOR" : invoice.Advance != null ? "ZAL" : "VAT"));
         if (invoice.Correction != null)
@@ -88,7 +98,7 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
                 new XElement(ns + "P_8B", FormatQuantity(line.Quantity)),
                 new XElement(ns + "P_9A", FormatAmount(line.UnitNetPrice)),
                 new XElement(ns + "P_11", FormatAmount(line.GetNetValue())),
-                new XElement(ns + "P_12", line.VatRate.ToString(CultureInfo.InvariantCulture)));
+                new XElement(ns + "P_12", KsefVatRates.ToP12(line.VatRate, line.VatRateKind)));
 
             // StanPrzed closes the row sequence in the schema, so it has to be added last.
             if (line.StateBeforeCorrection)
@@ -151,6 +161,8 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
             throw new ArgumentException(
                 "Notes exceed 3500 characters — the limit of StopkaFaktury (TTekstowy) in FA(3).", nameof(invoice));
 
+        ValidateBuyerIdentification(invoice.Buyer);
+
         // TNrRB constrains the account number to 10–34 characters; whitespace and dashes are
         // stripped before the check because the generator strips them on output too.
         if (invoice.BankAccount != null
@@ -158,14 +170,37 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
             throw new ArgumentException(
                 "Bank account number (NrRB) must be 10–34 characters long.", nameof(invoice));
 
-        var rates = invoice.Lines.Select(l => l.VatRate)
-            .Concat(invoice.Advance?.Payments.Select(p => p.VatRate) ?? Enumerable.Empty<int>())
-            .Concat(invoice.Advance?.OrderLines.Select(l => l.VatRate) ?? Enumerable.Empty<int>());
-        var unsupportedRate = rates.Where(r => r is not (23 or 22 or 8 or 7 or 5 or 4 or 0))
-            .Cast<int?>().FirstOrDefault();
+        var rates = invoice.Lines.Select(l => (l.VatRate, l.VatRateKind))
+            .Concat(invoice.Advance?.Payments.Select(p => (p.VatRate, p.VatRateKind))
+                    ?? Enumerable.Empty<(int, KsefVatRateKind)>())
+            .Concat(invoice.Advance?.OrderLines.Select(l => (l.VatRate, l.VatRateKind))
+                    ?? Enumerable.Empty<(int, KsefVatRateKind)>())
+            .ToList();
+
+        var unsupportedRate = rates
+            .Where(r => r.Item2 == KsefVatRateKind.Standard && !KsefVatRates.SupportedStandardRates.Contains(r.Item1))
+            .Select(r => (int?)r.Item1).FirstOrDefault();
         if (unsupportedRate != null)
             throw new NotSupportedException(
                 $"VAT rate {unsupportedRate}% is not supported by this generator (supported: 23, 22, 8, 7, 5, 4, 0).");
+
+        // A non-standard kind has no percentage by definition; a leftover 23 next to "zw" would
+        // mean the caller mapped the line wrongly, and the totals would silently disagree.
+        var mismatched = rates.FirstOrDefault(r => r.Item2 != KsefVatRateKind.Standard && r.Item1 != 0);
+        if (mismatched.Item2 != KsefVatRateKind.Standard)
+            throw new ArgumentException(
+                $"VAT rate kind {mismatched.Item2} requires VatRate = 0, got {mismatched.Item1}.", nameof(invoice));
+
+        if (rates.Any(r => r.Item2 == KsefVatRateKind.Exempt))
+        {
+            if (string.IsNullOrWhiteSpace(invoice.ExemptionBasis))
+                throw new ArgumentException(
+                    "An exempt (zw) line requires the legal basis of the exemption (ExemptionBasis → P_19A).",
+                    nameof(invoice));
+            if (invoice.ExemptionBasis.Length > 240)
+                throw new ArgumentException(
+                    "ExemptionBasis exceeds 240 characters — the limit of P_19A (TZnakowy) in FA(3).", nameof(invoice));
+        }
 
         ValidateAdvance(invoice);
 
@@ -184,6 +219,30 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
         if (invoice.Correction.CorrectedIssueDate == default)
             throw new ArgumentException(
                 "Corrected invoice issue date (DataWystFaKorygowanej) is required.", nameof(invoice));
+    }
+
+    private static void ValidateBuyerIdentification(KsefParty buyer)
+    {
+        if (!string.IsNullOrWhiteSpace(buyer.Nip))
+            return;
+
+        if (!string.IsNullOrWhiteSpace(buyer.EuVatNumber))
+        {
+            if (!EuVatNumberPattern.IsMatch(buyer.EuVatNumber.Trim()))
+                throw new ArgumentException(
+                    "EU VAT number (NrVatUE) must be 1–12 characters: digits, capital letters, '+' or '*' — without the country prefix.",
+                    nameof(buyer));
+            var prefix = KsefEuVatCountries.ToVatPrefix(buyer.EuVatCountryCode ?? buyer.CountryCode);
+            if (!KsefEuVatCountries.Contains(prefix))
+                throw new ArgumentException(
+                    $"'{prefix}' is not an EU VAT prefix (KodUE) — use ForeignTaxId for a buyer outside the EU.",
+                    nameof(buyer));
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(buyer.ForeignTaxId) && buyer.ForeignTaxId.Trim().Length > 50)
+            throw new ArgumentException(
+                "Foreign tax identifier (NrID) must not exceed 50 characters.", nameof(buyer));
     }
 
     private static void ValidateAdvance(KsefInvoice invoice)
@@ -259,6 +318,9 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
         {
             rowNumber++;
             var net = line.GetNetValue();
+            var vat = KsefVatRates.IsTaxed(line.VatRateKind)
+                ? Math.Round(net * line.VatRate / 100m, 2, MidpointRounding.AwayFromZero)
+                : 0m;
             element.Add(new XElement(ns + "ZamowienieWiersz",
                 new XElement(ns + "NrWierszaZam", rowNumber),
                 new XElement(ns + "P_7Z", line.Name),
@@ -266,9 +328,8 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
                 new XElement(ns + "P_8BZ", FormatQuantity(line.Quantity)),
                 new XElement(ns + "P_9AZ", FormatAmount(line.UnitNetPrice)),
                 new XElement(ns + "P_11NettoZ", FormatAmount(net)),
-                new XElement(ns + "P_11VatZ",
-                    FormatAmount(Math.Round(net * line.VatRate / 100m, 2, MidpointRounding.AwayFromZero))),
-                new XElement(ns + "P_12Z", line.VatRate.ToString(CultureInfo.InvariantCulture))));
+                new XElement(ns + "P_11VatZ", FormatAmount(vat)),
+                new XElement(ns + "P_12Z", KsefVatRates.ToP12(line.VatRate, line.VatRateKind))));
         }
 
         return element;
@@ -314,49 +375,99 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
         };
     }
 
-    /// <summary>Maps per-rate net and tax totals to FA(3) aggregate fields: 23/22% → P_13_1/P_14_1, 8/7% → P_13_2/P_14_2, 5/4% → P_13_3/P_14_3, 0% (domestic) → P_13_6_1.</summary>
+    /// <summary>
+    /// Maps per-(rate, kind) net and tax totals to the FA(3) aggregate fields, in schema order:
+    /// 23/22% → P_13_1/P_14_1, 8/7% → P_13_2/P_14_2, 5/4% → P_13_3/P_14_3, domestic 0% → P_13_6_1,
+    /// WDT → P_13_6_2, export → P_13_6_3, exempt → P_13_7, np I → P_13_8, np II → P_13_9,
+    /// reverse charge → P_13_10. The untaxed fields have no P_14 counterpart.
+    /// </summary>
     private static void AppendVatAggregates(XElement fa, XNamespace ns,
-        Dictionary<int, (decimal Net, decimal Vat)> vatTotals)
+        Dictionary<(int Rate, KsefVatRateKind Kind), (decimal Net, decimal Vat)> vatTotals)
     {
-        void Append(int[] rates, string netField, string? vatField)
+        void Append(Func<(int Rate, KsefVatRateKind Kind), bool> selector, string netField, string? vatField)
         {
-            if (!rates.Any(vatTotals.ContainsKey))
+            var matching = vatTotals.Where(x => selector(x.Key)).Select(x => x.Value).ToList();
+            if (matching.Count == 0)
                 return;
 
-            fa.Add(new XElement(ns + netField,
-                FormatAmount(rates.Where(vatTotals.ContainsKey).Sum(r => vatTotals[r].Net))));
+            fa.Add(new XElement(ns + netField, FormatAmount(matching.Sum(x => x.Net))));
             if (vatField != null)
-                fa.Add(new XElement(ns + vatField,
-                    FormatAmount(rates.Where(vatTotals.ContainsKey).Sum(r => vatTotals[r].Vat))));
+                fa.Add(new XElement(ns + vatField, FormatAmount(matching.Sum(x => x.Vat))));
         }
 
-        Append(new[] { 23, 22 }, "P_13_1", "P_14_1");
-        Append(new[] { 8, 7 }, "P_13_2", "P_14_2");
-        Append(new[] { 5, 4 }, "P_13_3", "P_14_3");
-        Append(new[] { 0 }, "P_13_6_1", null);
+        bool Standard((int Rate, KsefVatRateKind Kind) key, params int[] rates) =>
+            key.Kind == KsefVatRateKind.Standard && rates.Contains(key.Rate);
+
+        Append(k => Standard(k, 23, 22), "P_13_1", "P_14_1");
+        Append(k => Standard(k, 8, 7), "P_13_2", "P_14_2");
+        Append(k => Standard(k, 5, 4), "P_13_3", "P_14_3");
+        Append(k => Standard(k, 0), "P_13_6_1", null);
+        Append(k => k.Kind == KsefVatRateKind.ZeroIntraCommunity, "P_13_6_2", null);
+        Append(k => k.Kind == KsefVatRateKind.ZeroExport, "P_13_6_3", null);
+        Append(k => k.Kind == KsefVatRateKind.Exempt, "P_13_7", null);
+        Append(k => k.Kind == KsefVatRateKind.NotSubjectNonEu, "P_13_8", null);
+        Append(k => k.Kind == KsefVatRateKind.NotSubjectEu, "P_13_9", null);
+        Append(k => k.Kind == KsefVatRateKind.ReverseCharge, "P_13_10", null);
     }
 
-    private static XElement BuildAdnotacje(XNamespace ns) =>
-        // Standard "not applicable" markers (2 = no) for an ordinary domestic VAT invoice.
-        new(ns + "Adnotacje",
+    /// <summary>
+    /// Adnotacje: mostly "not applicable" markers (2 = no), except P_18 (reverse charge) and the
+    /// Zwolnienie block, which follow from the rate kinds on the document. P_19 + P_19A replace
+    /// P_19N when any line is exempt; the schema makes the two mutually exclusive.
+    /// </summary>
+    private static XElement BuildAdnotacje(XNamespace ns, KsefInvoice invoice)
+    {
+        var kinds = invoice.Lines.Select(l => l.VatRateKind)
+            .Concat(invoice.Advance?.Payments.Select(p => p.VatRateKind) ?? Enumerable.Empty<KsefVatRateKind>())
+            .Concat(invoice.Advance?.OrderLines.Select(l => l.VatRateKind) ?? Enumerable.Empty<KsefVatRateKind>())
+            .ToHashSet();
+
+        var exemption = kinds.Contains(KsefVatRateKind.Exempt)
+            ? new XElement(ns + "Zwolnienie",
+                new XElement(ns + "P_19", 1),
+                new XElement(ns + "P_19A", invoice.ExemptionBasis!.Trim()))
+            : new XElement(ns + "Zwolnienie", new XElement(ns + "P_19N", 1));
+
+        return new XElement(ns + "Adnotacje",
             new XElement(ns + "P_16", 2),
             new XElement(ns + "P_17", 2),
-            new XElement(ns + "P_18", 2),
+            new XElement(ns + "P_18", kinds.Contains(KsefVatRateKind.ReverseCharge) ? 1 : 2),
             new XElement(ns + "P_18A", 2),
-            new XElement(ns + "Zwolnienie", new XElement(ns + "P_19N", 1)),
+            exemption,
             new XElement(ns + "NoweSrodkiTransportu", new XElement(ns + "P_22N", 1)),
             new XElement(ns + "P_23", 2),
             new XElement(ns + "PMarzy", new XElement(ns + "P_PMarzyN", 1)));
+    }
 
     private static XElement BuildParty(XNamespace ns, string elementName, KsefParty party)
     {
         var identification = new XElement(ns + "DaneIdentyfikacyjne");
         if (!string.IsNullOrWhiteSpace(party.Nip))
+        {
             identification.Add(new XElement(ns + "NIP", party.Nip));
-        else if (elementName == "Podmiot2")
-            identification.Add(new XElement(ns + "BrakID", 1));
-        else
+        }
+        else if (elementName != "Podmiot2")
+        {
             throw new ArgumentException("Seller (Podmiot1) must have a NIP.");
+        }
+        else if (!string.IsNullOrWhiteSpace(party.EuVatNumber))
+        {
+            identification.Add(new XElement(ns + "KodUE",
+                KsefEuVatCountries.ToVatPrefix(party.EuVatCountryCode ?? party.CountryCode)));
+            identification.Add(new XElement(ns + "NrVatUE", party.EuVatNumber.Trim()));
+        }
+        else if (!string.IsNullOrWhiteSpace(party.ForeignTaxId))
+        {
+            var country = (party.ForeignTaxIdCountryCode ?? party.CountryCode).Trim().ToUpperInvariant();
+            if (country.Length > 0)
+                identification.Add(new XElement(ns + "KodKraju", country));
+            identification.Add(new XElement(ns + "NrID", party.ForeignTaxId.Trim()));
+        }
+        else
+        {
+            identification.Add(new XElement(ns + "BrakID", 1));
+        }
+
         identification.Add(new XElement(ns + "Nazwa", party.Name));
 
         var element = new XElement(ns + elementName,
