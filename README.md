@@ -95,6 +95,39 @@ Nabywca spoza Polski: zamiast `Nip` podaj `EuVatNumber` (+ `EuVatCountryCode`, d
 (+ `ForeignTaxIdCountryCode`; `KodKraju` + `NrID`). Lista prefiksów UE to `KsefEuVatCountries`
 (uwaga: Grecja to `EL`, Irlandia Północna `XI`, Wielka Brytania nie jest w UE).
 
+### Odbiorca inny niż nabywca — Podmiot3 (od 8.0.19)
+
+Gdy fakturę opłaca centrala, a towar lub usługę odbiera jej oddział, zakład albo inna spółka
+z grupy (typowo spółki Skarbu Państwa i jednostki budżetowe), FA(3) opisuje tę jednostkę w węźle
+`Podmiot3` z rolą `2` — „Odbiorca”. `KsefInvoice.ThirdParties` przyjmuje listę takich podmiotów
+(schemat dopuszcza do 100), każdy z rolą ze schematu (`KsefThirdPartyRole`) i danymi jak u nabywcy:
+
+```csharp
+invoice.ThirdParties.Add(new KsefThirdParty
+{
+    Role = KsefThirdPartyRole.Recipient,
+    Party = new KsefParty
+    {
+        Nip = "2222222222",             // albo EuVatNumber / ForeignTaxId; null => BrakID
+        Name = "Nabywca S.A. Oddział w Gdańsku",
+        AddressLine1 = "ul. Portowa 7",
+        AddressLine2 = "80-001 Gdańsk"
+    }
+});
+```
+
+Adres w `Podmiot3` jest w schemacie opcjonalny: podmiot bez obu linii adresu nie dostaje `Adres`,
+a podmiot znany tylko z „kod miasto” ma tę linię wpisaną jako `AdresL1` (schemat wymaga pierwszej
+linii). Role 7–10 (JST i grupy VAT) wymagają dodatkowo znaczników `JST`/`GV` na nabywcy i zwykle
+`IDWew` — tego generator jeszcze nie wystawia (na `Podmiot2` zawsze idzie `JST=2`, `GV=2`).
+
+Korekta samych danych odbiorcy (bez zmiany kwot) to zwykła faktura `KOR` z identycznymi wierszami
+`StanPrzed` i „po”, zerowymi agregatami i `Podmiot3` z nowym odbiorcą — test
+`GeneratedRecipientOnlyCorrection_IsValidAgainstOfficialFa3Xsd` pilnuje, że taki dokument przechodzi XSD.
+
+Przy okazji od 8.0.19 pusta druga linia adresu (`AdresL2`) nie jest już wystawiana — schemat nie
+przyjmuje w niej pustego ciągu.
+
 Warstwy niższego poziomu (`IKsefApiClient`, `IKsefAuthenticationService`, `IFa3XmlGenerator`, `KsefCryptography`, `KsefXadesSigner`) są publiczne — można ich użyć bezpośrednio, np. do własnej orkiestracji wsadowej.
 
 ## Logowanie certyfikatem zamiast tokenem

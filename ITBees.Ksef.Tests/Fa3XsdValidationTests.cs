@@ -422,6 +422,105 @@ public class Fa3XsdValidationTests
         Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
     }
 
+    private static KsefThirdParty CreateRecipient() => new()
+    {
+        Role = KsefThirdPartyRole.Recipient,
+        Party = new KsefParty
+        {
+            Nip = "2222222222",
+            Name = "Nabywca S.A. Oddział w Gdańsku",
+            AddressLine1 = "ul. Portowa 7",
+            AddressLine2 = "80-001 Gdańsk",
+            Email = "oddzial@example.com"
+        }
+    };
+
+    /// <summary>The buyer pays, its branch receives: Podmiot3 with role 2 next to a regular Podmiot2.</summary>
+    [Fact]
+    public void GeneratedInvoiceWithRecipient_IsValidAgainstOfficialFa3Xsd()
+    {
+        var invoice = new KsefInvoice
+        {
+            Number = "FV/2026/09/010",
+            IssueDate = new DateOnly(2026, 9, 4),
+            Currency = "PLN",
+            Buyer = new KsefParty
+            {
+                Nip = "1111111111",
+                Name = "Nabywca S.A.",
+                AddressLine1 = "ul. Polna 2",
+                AddressLine2 = "11-111 Kraków"
+            },
+            ThirdParties = { CreateRecipient() },
+            Lines =
+            {
+                new KsefInvoiceLine { Name = "Przegląd instalacji", Quantity = 1, UnitNetPrice = 4000m, VatRate = 23 }
+            },
+            PaymentDueDate = new DateOnly(2026, 9, 18),
+            BankAccount = new KsefBankAccount { Number = "44114020040000340285638379" }
+        };
+
+        var errors = Validate(CreateGenerator().Generate(invoice));
+
+        Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
+    }
+
+    /// <summary>A recipient without a tax id and without a street: BrakID and no Adres at all.</summary>
+    [Fact]
+    public void GeneratedInvoiceWithBareRecipient_IsValidAgainstOfficialFa3Xsd()
+    {
+        var invoice = new KsefInvoice
+        {
+            Number = "FV/2026/09/011",
+            IssueDate = new DateOnly(2026, 9, 4),
+            Currency = "PLN",
+            Buyer = new KsefParty
+            {
+                Nip = "1111111111",
+                Name = "Nabywca S.A.",
+                AddressLine1 = "ul. Polna 2",
+                AddressLine2 = "11-111 Kraków"
+            },
+            ThirdParties = { new KsefThirdParty { Party = new KsefParty { Name = "Magazyn centralny" } } },
+            Lines =
+            {
+                new KsefInvoiceLine { Name = "Dostawa", Quantity = 1, UnitNetPrice = 100m, VatRate = 23 }
+            }
+        };
+
+        var errors = Validate(CreateGenerator().Generate(invoice));
+
+        Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
+    }
+
+    /// <summary>
+    /// A correction that only adds the recipient: the rows before and after are identical, so every
+    /// aggregate and P_15 come out as zero, and Podmiot3 carries the newly named unit.
+    /// </summary>
+    [Fact]
+    public void GeneratedRecipientOnlyCorrection_IsValidAgainstOfficialFa3Xsd()
+    {
+        var invoice = CreateCorrection();
+        invoice.Correction!.Reason = "Uzupełnienie danych odbiorcy";
+        invoice.Correction.Type = KsefCorrectionType.OriginalPeriod;
+        invoice.Lines.Clear();
+        invoice.Lines.Add(new KsefInvoiceLine
+        {
+            Name = "Konsultacje IT", Unit = "h", Quantity = 10, UnitNetPrice = 250m, VatRate = 23,
+            StateBeforeCorrection = true
+        });
+        invoice.Lines.Add(new KsefInvoiceLine { Name = "Konsultacje IT", Unit = "h", Quantity = 10, UnitNetPrice = 250m, VatRate = 23 });
+        invoice.ThirdParties.Add(CreateRecipient());
+
+        var xml = CreateGenerator().Generate(invoice);
+        var errors = Validate(xml);
+
+        Assert.True(errors.Count == 0, "XSD validation errors: " + string.Join(" | ", errors));
+        var fa = System.Xml.Linq.XDocument.Parse(xml).Root!.Element(Fa3XmlGenerator.Fa3Namespace + "Fa")!;
+        Assert.Equal("0.00", fa.Element(Fa3XmlGenerator.Fa3Namespace + "P_13_1")!.Value);
+        Assert.Equal("0.00", fa.Element(Fa3XmlGenerator.Fa3Namespace + "P_15")!.Value);
+    }
+
     /// <summary>Redirects the http schemaLocation of StrukturyDanych/ElementarneTypyDanych/KodyKrajow to local files.</summary>
     private sealed class LocalSchemaResolver : XmlUrlResolver
     {

@@ -127,8 +127,13 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
                     generatedAtUtc.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture)),
                 new XElement(ns + "SystemInfo", _options.SystemInfo)),
             BuildParty(ns, "Podmiot1", seller),
-            BuildParty(ns, "Podmiot2", invoice.Buyer),
-            fa);
+            BuildParty(ns, "Podmiot2", invoice.Buyer));
+
+        // Podmiot3 sits between Podmiot2 and Fa in the schema sequence.
+        foreach (var thirdParty in invoice.ThirdParties)
+            faktura.Add(BuildThirdParty(ns, thirdParty));
+
+        faktura.Add(fa);
 
         // StopkaFaktury is TTekstowy (min 1 char), so blank notes must emit no Stopka at all.
         if (!string.IsNullOrWhiteSpace(invoice.Notes))
@@ -161,7 +166,8 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
             throw new ArgumentException(
                 "Notes exceed 3500 characters — the limit of StopkaFaktury (TTekstowy) in FA(3).", nameof(invoice));
 
-        ValidateBuyerIdentification(invoice.Buyer);
+        ValidateIdentification(invoice.Buyer, "buyer");
+        ValidateThirdParties(invoice.ThirdParties);
 
         // TNrRB constrains the account number to 10–34 characters; whitespace and dashes are
         // stripped before the check because the generator strips them on output too.
@@ -221,28 +227,50 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
                 "Corrected invoice issue date (DataWystFaKorygowanej) is required.", nameof(invoice));
     }
 
-    private static void ValidateBuyerIdentification(KsefParty buyer)
+    /// <param name="party">The party to check.</param>
+    /// <param name="who">Which party the message is about ("buyer", "third party") — the rules are the same.</param>
+    private static void ValidateIdentification(KsefParty party, string who)
     {
-        if (!string.IsNullOrWhiteSpace(buyer.Nip))
+        if (!string.IsNullOrWhiteSpace(party.Nip))
             return;
 
-        if (!string.IsNullOrWhiteSpace(buyer.EuVatNumber))
+        if (!string.IsNullOrWhiteSpace(party.EuVatNumber))
         {
-            if (!EuVatNumberPattern.IsMatch(buyer.EuVatNumber.Trim()))
+            if (!EuVatNumberPattern.IsMatch(party.EuVatNumber.Trim()))
                 throw new ArgumentException(
-                    "EU VAT number (NrVatUE) must be 1–12 characters: digits, capital letters, '+' or '*' — without the country prefix.",
-                    nameof(buyer));
-            var prefix = KsefEuVatCountries.ToVatPrefix(buyer.EuVatCountryCode ?? buyer.CountryCode);
+                    $"EU VAT number (NrVatUE) of the {who} must be 1–12 characters: digits, capital letters, '+' or '*' — without the country prefix.",
+                    nameof(party));
+            var prefix = KsefEuVatCountries.ToVatPrefix(party.EuVatCountryCode ?? party.CountryCode);
             if (!KsefEuVatCountries.Contains(prefix))
                 throw new ArgumentException(
-                    $"'{prefix}' is not an EU VAT prefix (KodUE) — use ForeignTaxId for a buyer outside the EU.",
-                    nameof(buyer));
+                    $"'{prefix}' is not an EU VAT prefix (KodUE) — use ForeignTaxId for a {who} outside the EU.",
+                    nameof(party));
             return;
         }
 
-        if (!string.IsNullOrWhiteSpace(buyer.ForeignTaxId) && buyer.ForeignTaxId.Trim().Length > 50)
+        if (!string.IsNullOrWhiteSpace(party.ForeignTaxId) && party.ForeignTaxId.Trim().Length > 50)
             throw new ArgumentException(
-                "Foreign tax identifier (NrID) must not exceed 50 characters.", nameof(buyer));
+                $"Foreign tax identifier (NrID) of the {who} must not exceed 50 characters.", nameof(party));
+    }
+
+    /// <summary>
+    /// Podmiot3 is optional and repeatable (up to 100). A party needs at least a name — the schema
+    /// would accept a nameless one, but KSeF readers show Podmiot3 by name and nothing else.
+    /// </summary>
+    private static void ValidateThirdParties(List<KsefThirdParty> thirdParties)
+    {
+        if (thirdParties.Count > 100)
+            throw new ArgumentException("FA(3) allows at most 100 third parties (Podmiot3).", nameof(thirdParties));
+
+        foreach (var thirdParty in thirdParties)
+        {
+            if (string.IsNullOrWhiteSpace(thirdParty.Party.Name))
+                throw new ArgumentException("Third party (Podmiot3) name is required.", nameof(thirdParties));
+            if (!Enum.IsDefined(thirdParty.Role))
+                throw new ArgumentException(
+                    $"Unknown third party role (Rola): {(int)thirdParty.Role}.", nameof(thirdParties));
+            ValidateIdentification(thirdParty.Party, "third party");
+        }
     }
 
     private static void ValidateAdvance(KsefInvoice invoice)
@@ -441,12 +469,57 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
 
     private static XElement BuildParty(XNamespace ns, string elementName, KsefParty party)
     {
+        var element = new XElement(ns + elementName,
+            BuildIdentification(ns, party, requireNip: elementName == "Podmiot1"),
+            BuildAddress(ns, party.CountryCode, party.AddressLine1, party.AddressLine2));
+
+        var contact = BuildContact(ns, party);
+        if (contact != null)
+            element.Add(contact);
+
+        if (elementName == "Podmiot2")
+        {
+            // Mandatory FA(3) markers: 2 = the invoice concerns neither a subordinate
+            // local-government unit (JST) nor a VAT group member (GV).
+            element.Add(new XElement(ns + "JST", 2));
+            element.Add(new XElement(ns + "GV", 2));
+        }
+
+        return element;
+    }
+
+    /// <summary>
+    /// Podmiot3: identified like the buyer, the address optional (unlike Podmiot1/2), then the
+    /// role code. Schema order: DaneIdentyfikacyjne, Adres, DaneKontaktowe, Rola.
+    /// </summary>
+    private static XElement BuildThirdParty(XNamespace ns, KsefThirdParty thirdParty)
+    {
+        var party = thirdParty.Party;
+        var element = new XElement(ns + "Podmiot3", BuildIdentification(ns, party, requireNip: false));
+
+        // TAdres requires AdresL1, so a party known only by "postcode city" gets that as its
+        // first line rather than an empty AdresL1 the schema would reject.
+        var line1 = string.IsNullOrWhiteSpace(party.AddressLine1) ? party.AddressLine2 : party.AddressLine1;
+        var line2 = string.IsNullOrWhiteSpace(party.AddressLine1) ? string.Empty : party.AddressLine2;
+        if (!string.IsNullOrWhiteSpace(line1))
+            element.Add(BuildAddress(ns, party.CountryCode, line1, line2));
+
+        var contact = BuildContact(ns, party);
+        if (contact != null)
+            element.Add(contact);
+
+        element.Add(new XElement(ns + "Rola", (int)thirdParty.Role));
+        return element;
+    }
+
+    private static XElement BuildIdentification(XNamespace ns, KsefParty party, bool requireNip)
+    {
         var identification = new XElement(ns + "DaneIdentyfikacyjne");
         if (!string.IsNullOrWhiteSpace(party.Nip))
         {
             identification.Add(new XElement(ns + "NIP", party.Nip));
         }
-        else if (elementName != "Podmiot2")
+        else if (requireNip)
         {
             throw new ArgumentException("Seller (Podmiot1) must have a NIP.");
         }
@@ -469,33 +542,31 @@ public class Fa3XmlGenerator : IFa3XmlGenerator
         }
 
         identification.Add(new XElement(ns + "Nazwa", party.Name));
+        return identification;
+    }
 
-        var element = new XElement(ns + elementName,
-            identification,
-            new XElement(ns + "Adres",
-                new XElement(ns + "KodKraju", party.CountryCode),
-                new XElement(ns + "AdresL1", party.AddressLine1),
-                new XElement(ns + "AdresL2", party.AddressLine2)));
+    /// <summary>AdresL2 is optional in TAdres and TZnakowy512 has no room for an empty string, so a blank second line is left out.</summary>
+    private static XElement BuildAddress(XNamespace ns, string countryCode, string line1, string line2)
+    {
+        var address = new XElement(ns + "Adres",
+            new XElement(ns + "KodKraju", countryCode),
+            new XElement(ns + "AdresL1", line1.Trim()));
+        if (!string.IsNullOrWhiteSpace(line2))
+            address.Add(new XElement(ns + "AdresL2", line2.Trim()));
+        return address;
+    }
 
-        if (!string.IsNullOrWhiteSpace(party.Email) || !string.IsNullOrWhiteSpace(party.Phone))
-        {
-            var contact = new XElement(ns + "DaneKontaktowe");
-            if (!string.IsNullOrWhiteSpace(party.Email))
-                contact.Add(new XElement(ns + "Email", party.Email));
-            if (!string.IsNullOrWhiteSpace(party.Phone))
-                contact.Add(new XElement(ns + "Telefon", party.Phone));
-            element.Add(contact);
-        }
+    private static XElement? BuildContact(XNamespace ns, KsefParty party)
+    {
+        if (string.IsNullOrWhiteSpace(party.Email) && string.IsNullOrWhiteSpace(party.Phone))
+            return null;
 
-        if (elementName == "Podmiot2")
-        {
-            // Mandatory FA(3) markers: 2 = the invoice concerns neither a subordinate
-            // local-government unit (JST) nor a VAT group member (GV).
-            element.Add(new XElement(ns + "JST", 2));
-            element.Add(new XElement(ns + "GV", 2));
-        }
-
-        return element;
+        var contact = new XElement(ns + "DaneKontaktowe");
+        if (!string.IsNullOrWhiteSpace(party.Email))
+            contact.Add(new XElement(ns + "Email", party.Email));
+        if (!string.IsNullOrWhiteSpace(party.Phone))
+            contact.Add(new XElement(ns + "Telefon", party.Phone));
+        return contact;
     }
 
     private static string FormatDate(DateOnly date) => date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);

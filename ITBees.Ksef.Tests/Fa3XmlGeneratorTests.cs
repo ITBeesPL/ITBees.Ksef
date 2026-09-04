@@ -472,4 +472,110 @@ public class Fa3XmlGeneratorTests
         noOrder.Advance!.OrderLines.Clear();
         Assert.Throws<ArgumentException>(() => CreateGenerator().Generate(noOrder));
     }
+
+    private static KsefThirdParty CreateRecipient() => new()
+    {
+        Role = KsefThirdPartyRole.Recipient,
+        Party = new KsefParty
+        {
+            Nip = "2222222222",
+            Name = "Nabywca S.A. Oddział w Gdańsku",
+            AddressLine1 = "ul. Portowa 7",
+            AddressLine2 = "80-001 Gdańsk",
+            Email = "oddzial@example.com"
+        }
+    };
+
+    [Fact]
+    public void Generate_EmitsRecipientAsPodmiot3BetweenBuyerAndFa()
+    {
+        var invoice = CreateInvoice();
+        invoice.ThirdParties.Add(CreateRecipient());
+
+        var root = XDocument.Parse(CreateGenerator().Generate(invoice)).Root!;
+
+        Assert.Equal(new[] { "Naglowek", "Podmiot1", "Podmiot2", "Podmiot3", "Fa" },
+            root.Elements().Select(x => x.Name.LocalName).ToArray());
+
+        var podmiot3 = root.Element(Ns + "Podmiot3")!;
+        var identification = podmiot3.Element(Ns + "DaneIdentyfikacyjne")!;
+        Assert.Equal("2222222222", identification.Element(Ns + "NIP")!.Value);
+        Assert.Equal("Nabywca S.A. Oddział w Gdańsku", identification.Element(Ns + "Nazwa")!.Value);
+        Assert.Equal("ul. Portowa 7", podmiot3.Element(Ns + "Adres")!.Element(Ns + "AdresL1")!.Value);
+        Assert.Equal("80-001 Gdańsk", podmiot3.Element(Ns + "Adres")!.Element(Ns + "AdresL2")!.Value);
+        Assert.Equal("oddzial@example.com", podmiot3.Element(Ns + "DaneKontaktowe")!.Element(Ns + "Email")!.Value);
+        Assert.Equal("2", podmiot3.Element(Ns + "Rola")!.Value);
+        // The JST/GV markers belong to the buyer only.
+        Assert.Null(podmiot3.Element(Ns + "JST"));
+        Assert.Equal(new[] { "DaneIdentyfikacyjne", "Adres", "DaneKontaktowe", "Rola" },
+            podmiot3.Elements().Select(x => x.Name.LocalName).ToArray());
+    }
+
+    [Fact]
+    public void Generate_EmitsOnePodmiot3PerThirdPartyInOrder()
+    {
+        var invoice = CreateInvoice();
+        invoice.ThirdParties.Add(CreateRecipient());
+        invoice.ThirdParties.Add(new KsefThirdParty
+        {
+            Role = KsefThirdPartyRole.Payer,
+            Party = new KsefParty { Nip = "3333333333", Name = "Centrum Rozliczeń Sp. z o.o." }
+        });
+
+        var roles = XDocument.Parse(CreateGenerator().Generate(invoice)).Root!
+            .Elements(Ns + "Podmiot3").Select(x => x.Element(Ns + "Rola")!.Value).ToArray();
+
+        Assert.Equal(new[] { "2", "6" }, roles);
+    }
+
+    [Fact]
+    public void Generate_ThirdPartyWithoutIdentifierOrAddress_EmitsBrakIdAndNoAdres()
+    {
+        var invoice = CreateInvoice();
+        invoice.ThirdParties.Add(new KsefThirdParty { Party = new KsefParty { Name = "Magazyn centralny" } });
+
+        var podmiot3 = XDocument.Parse(CreateGenerator().Generate(invoice)).Root!.Element(Ns + "Podmiot3")!;
+
+        Assert.Equal("1", podmiot3.Element(Ns + "DaneIdentyfikacyjne")!.Element(Ns + "BrakID")!.Value);
+        Assert.Null(podmiot3.Element(Ns + "Adres"));
+        Assert.Null(podmiot3.Element(Ns + "DaneKontaktowe"));
+    }
+
+    [Fact]
+    public void Generate_ThirdPartyKnownOnlyByCityLine_PromotesItToAdresL1()
+    {
+        var invoice = CreateInvoice();
+        invoice.ThirdParties.Add(new KsefThirdParty
+        {
+            Party = new KsefParty { Nip = "2222222222", Name = "Oddział", AddressLine2 = "80-001 Gdańsk" }
+        });
+
+        var address = XDocument.Parse(CreateGenerator().Generate(invoice)).Root!
+            .Element(Ns + "Podmiot3")!.Element(Ns + "Adres")!;
+
+        Assert.Equal("80-001 Gdańsk", address.Element(Ns + "AdresL1")!.Value);
+        Assert.Null(address.Element(Ns + "AdresL2"));
+    }
+
+    [Fact]
+    public void Generate_ThrowsWhenThirdPartyHasNoName()
+    {
+        var invoice = CreateInvoice();
+        invoice.ThirdParties.Add(new KsefThirdParty { Party = new KsefParty { Nip = "2222222222" } });
+
+        Assert.Throws<ArgumentException>(() => CreateGenerator().Generate(invoice));
+    }
+
+    [Fact]
+    public void Generate_OmitsEmptyAdresL2OnBuyer()
+    {
+        var invoice = CreateInvoice();
+        invoice.Buyer.AddressLine2 = string.Empty;
+
+        var address = XDocument.Parse(CreateGenerator().Generate(invoice)).Root!
+            .Element(Ns + "Podmiot2")!.Element(Ns + "Adres")!;
+
+        Assert.Equal("ul. Polna 2", address.Element(Ns + "AdresL1")!.Value);
+        Assert.Null(address.Element(Ns + "AdresL2"));
+    }
 }

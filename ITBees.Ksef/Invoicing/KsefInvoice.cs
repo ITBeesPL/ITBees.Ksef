@@ -24,6 +24,15 @@ public class KsefInvoice
     /// <summary>Buyer (Podmiot2).</summary>
     public KsefParty Buyer { get; set; } = new();
 
+    /// <summary>
+    /// Parties other than the seller and the buyer that appear on the invoice (Podmiot3, up to
+    /// 100 of them). The typical case is the buyer's unit that actually receives the goods or
+    /// service — a branch, a plant, another company of a state-owned group — which is not the
+    /// buyer within the meaning of the VAT act: <see cref="KsefThirdPartyRole.Recipient"/>.
+    /// Empty renders no Podmiot3 element at all.
+    /// </summary>
+    public List<KsefThirdParty> ThirdParties { get; set; } = new();
+
     public List<KsefInvoiceLine> Lines { get; set; } = new();
 
     /// <summary>
@@ -240,4 +249,64 @@ public class KsefInvoiceLine
     public bool StateBeforeCorrection { get; set; }
 
     public decimal GetNetValue() => NetValue ?? Math.Round(Quantity * UnitNetPrice, 2, MidpointRounding.AwayFromZero);
+}
+
+/// <summary>A party of the invoice other than the seller and the buyer (FA(3): Podmiot3).</summary>
+public class KsefThirdParty
+{
+    /// <summary>Why the party is on the invoice (Rola) — rendered as the schema code.</summary>
+    public KsefThirdPartyRole Role { get; set; } = KsefThirdPartyRole.Recipient;
+
+    /// <summary>
+    /// Identification, name, address and contact of the party. Identified like the buyer: NIP,
+    /// EU VAT number, foreign tax id or none of them (BrakID). The address is optional in the
+    /// schema — a party with both address lines empty renders no Adres element, and one with only
+    /// <see cref="KsefParty.AddressLine2"/> gets it promoted to AdresL1, which the schema requires.
+    /// </summary>
+    public KsefParty Party { get; set; } = new();
+}
+
+/// <summary>
+/// Role of a third party (TRolaPodmiotu3). Values are the schema codes, so they must not be
+/// renumbered. Roles 7–10 (local-government units and VAT-group members) additionally require
+/// the JST/GV markers on Podmiot2 and usually an internal identifier (IDWew), which this
+/// generator does not emit yet — it always writes JST = 2 and GV = 2 on the buyer.
+/// </summary>
+public enum KsefThirdPartyRole
+{
+    /// <summary>Factor — the invoice is issued under a factoring agreement.</summary>
+    Factor = 1,
+
+    /// <summary>
+    /// Recipient — the buyer's internal unit or branch that receives the goods or service and
+    /// is not itself the buyer within the meaning of the VAT act.
+    /// </summary>
+    Recipient = 2,
+
+    /// <summary>Original entity — an acquired or transformed entity that actually made the supply.</summary>
+    OriginalEntity = 3,
+
+    /// <summary>Additional buyer — a buyer other than the one in Podmiot2.</summary>
+    AdditionalBuyer = 4,
+
+    /// <summary>Invoice issuer — a party issuing the invoice on behalf of the taxpayer (not self-billing).</summary>
+    Issuer = 5,
+
+    /// <summary>Payer — a party settling the liability in place of the buyer.</summary>
+    Payer = 6,
+
+    /// <summary>Local-government unit — issuer.</summary>
+    LocalGovernmentIssuer = 7,
+
+    /// <summary>Local-government unit — recipient.</summary>
+    LocalGovernmentRecipient = 8,
+
+    /// <summary>VAT-group member — issuer.</summary>
+    VatGroupMemberIssuer = 9,
+
+    /// <summary>VAT-group member — recipient.</summary>
+    VatGroupMemberRecipient = 10,
+
+    /// <summary>Employee.</summary>
+    Employee = 11
 }
